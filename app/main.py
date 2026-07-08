@@ -7,6 +7,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import models  # noqa: F401 — ORM 모델을 Base.metadata 에 등록(create_all 전 필수)
 from .api import auth, projects, results, scans
 from .config import settings
 from .db import Base, engine
