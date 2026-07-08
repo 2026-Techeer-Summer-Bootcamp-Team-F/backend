@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import models  # noqa: F401 — ORM 모델을 Base.metadata 에 등록(create_all 전 필수)
-from .api import auth, projects, results, scans
+from .api import auth, dummy, projects, results, scans
 from .config import settings
 from .db import Base, engine
 
@@ -30,6 +30,7 @@ app.include_router(auth.router)        # §1 Auth
 app.include_router(projects.router)    # §2·§3 GitHub Repos + Projects
 app.include_router(scans.router)       # §4 Scans (+ SSE)
 app.include_router(results.router)     # §5 Report/Heatmap/Findings
+app.include_router(dummy.router)        # (PoC) 취약 더미앱 = self-testing 표적. 운영 배포 시 제외
 
 
 @app.get("/health")
