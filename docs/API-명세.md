@@ -217,7 +217,9 @@ GitHub OAuth 시작. `state`(CSRF) 세팅 후 GitHub 인가 URL 반환/리다이
     "attack_types": ["direct_prompt_injection", "jailbreak", "pii_leakage"],
     "target_model": "gpt-4o",
     "population_size": 8,
-    "max_generations": 5
+    "max_generations": 5,
+    "auth_context": "anon",
+    "safe_mode": true
   }
 }
 ```
@@ -227,6 +229,8 @@ GitHub OAuth 시작. `state`(CSRF) 세팅 후 GitHub 인가 URL 반환/리다이
 | target_model | 타겟 모델 드롭다운 | `gpt-4o`/`claude`/`current`(정찰값 사용)/`local` |
 | population_size | 한 세대 공격 수 | `8` |
 | max_generations | 최대 세대 | `5` |
+| **auth_context** | **어느 역할로 공격할지** — 엔진이 `target.config.auth`의 해당 역할 자격증명 세트를 씀. 상태별로 나눠 스캔→비교(→ `공격시나리오-설계.md` A3·A4) | `anon`(기본)/`user`/`admin` |
+| **safe_mode** | **드라이런** — 행동형 에이전트(이체·메일)의 도구 호출을 실제 실행 안 하고 시뮬레이션(→ `공격시나리오-설계.md` §6) | `true`(기본, 안전)/`false` |
 
 - 처리: 고른 attack_types 각각을 `objectives`(atlas 기법) 레코드로 **변환 생성** → 진화 스캔 시작. **`scans.config`엔 요청 그대로(`attack_types`) 저장**하고, `objectives`는 별도 테이블 레코드(→ `GET /scans/{id}` 응답의 `objectives`).
 > ⚠️ **D1**: 여러 attack_type이 같은 ATLAS로 겹침(13유형→ATLAS 8개, 예: jailbreak·roleplay_persona→T0054, data_leakage·pii_leakage→T0057) → `objectives` 생성 시 **atlas 기준 dedup** 권장(히트맵 칸 중복 방지).
