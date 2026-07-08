@@ -14,7 +14,7 @@ import random
 
 import httpx
 
-from .auth_provider import AuthConfigError, make_provider
+from .auth_provider import AuthConfigError, _dig, make_provider
 
 
 class Actor:
@@ -38,6 +38,10 @@ class HttpActor(Actor):
         self.max_retries = int(config.get("max_retries", 4))
         # 인증: config.auth 있으면 TokenProvider 생성(없으면 None). cache_key로 스캔당 1회 발급 공유.
         self.auth = make_provider(config.get("auth"), cache_key or self.url)
+        # 세션(멀티턴): 응답에서 세션ID 추출→다음 요청 재주입해 대화 상태 유지(#11, 크레센도 토대).
+        # config.session = {session_source: header|cookie|body, session_path, inject_header?}
+        self._session_cfg = config.get("session") or {}
+        self._session_id = None
 
     def _build_body(self, prompt: str) -> str:
         # JSON 문자열 안전 삽입: prompt를 JSON 인코딩 후 바깥 따옴표 제거해 치환
@@ -54,6 +58,39 @@ class HttpActor(Actor):
                 return json.dumps(data)[:2000]
         return str(cur)
 
+    def _extract_session(self, resp: httpx.Response):
+        """응답에서 세션ID 추출(session_source: header|cookie|body + session_path)."""
+        src = self._session_cfg.get("session_source")
+        path = self._session_cfg.get("session_path", "")
+        if not src or not path:
+            return None
+        if src == "header":
+            return resp.headers.get(path)
+        if src == "cookie":
+            return resp.cookies.get(path)
+        if src == "body":
+            try:
+                return _dig(resp.json(), path)
+            except Exception:  # noqa: BLE001 - 비JSON/경로없음
+                return None
+        return None
+
+    def _inject_session(self, headers: dict) -> dict:
+        """보유한 세션ID를 다음 요청에 재주입(cookie면 Cookie 헤더, 아니면 헤더)."""
+        if not self._session_id:
+            return headers
+        src = self._session_cfg.get("session_source")
+        path = self._session_cfg.get("session_path", "")
+        headers = dict(headers)
+        if src == "cookie":
+            cur = headers.get("Cookie", "")
+            headers["Cookie"] = (cur + "; " if cur else "") + f"{path}={self._session_id}"
+        else:
+            # header면 같은 헤더명으로, body면 지정 inject_header(기본 X-Session-Id)로 재주입
+            name = path if src == "header" else self._session_cfg.get("inject_header", "X-Session-Id")
+            headers[name] = self._session_id
+        return headers
+
     async def send(self, prompt: str) -> str:
         if self.delay:
             await asyncio.sleep(self.delay)
@@ -62,8 +99,9 @@ class HttpActor(Actor):
         async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
             for attempt in range(self.max_retries):
                 try:
-                    # 요청 직전 헤더 재조립 — 토큰이 갱신되면 반영(auth 없으면 그대로)
+                    # 요청 직전 헤더 재조립 — 토큰이 갱신되면 반영(auth 없으면 그대로) + 세션 재주입
                     headers = await self.auth.apply(self.headers) if self.auth else self.headers
+                    headers = self._inject_session(headers)
                     resp = await client.request(
                         self.method, self.url, headers=headers, content=body.encode())
                     # 401/403: 토큰 만료/무효 → 1회만 강제 재인증 후 재발사 (raise 이전에 가로채기)
@@ -82,6 +120,10 @@ class HttpActor(Actor):
                         await asyncio.sleep(min(2 ** attempt, 8) + random.uniform(0, 0.5))
                         continue
                     resp.raise_for_status()
+                    # 세션ID 추출→보관(다음 send에 재주입, 멀티턴 상태유지)
+                    sid = self._extract_session(resp)
+                    if sid:
+                        self._session_id = sid
                     try:
                         return self._extract(resp.json())
                     except json.JSONDecodeError:
