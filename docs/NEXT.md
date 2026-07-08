@@ -52,8 +52,31 @@
 - **주의**: 소스는 OK지만 **중복 많음→dedup 필수 / 2023 편중→최신 보강 / 품질편차→verified 재검증**. ⚠️ai4privacy는 제외(공격 아님).
 - **실제 적재는 안 함**(조사·기록만).
 
-## 내일(다음 세션) 시작점 ★
-→ **디자인(팀원)** 대기 중. 그다음 **벡터DB 실제 적재**: `docs/벡터DB-적재계획.md` §0~2 따라 (1)로컬 pgvector `docker compose up` (2)Necent+in-the-wild부터 수집 (3)정제·dedup·임베딩·적재 파이프라인 1소스 관통 → 확장.
+## 오늘(2026-07-09) 한 것 — 액터 파트 전부 구현 ★
+액터 = 표적에 공격 발사하는 부분. 이슈별 PR로 구현(각 PR = 이슈 1개).
+- **#18 actor.py** (머지됨): Actor/HttpActor/BrowserActor/make_actor. send(prompt)->response. **actor_type은 config 안**으로 분기(DB 컬럼 없음=스키마 정합). HttpActor=429/5xx 백오프. BrowserActor=Playwright(구현만, 시연은 http).
+- **#21 config연동+더미앱** (PR 열림·머지 보류): target.config→make_actor→실제 발사 관통. 취약 더미앱(`app/api/dummy.py` AcmeBank 카나리 FLAG) 이식. `scripts/smoke_actor.py` PASS(약한=거절/강한=FLAG유출).
+- **#22 auth** (PR 열림·머지 보류): `auth_provider.py` TokenProvider 6모드(bearer/api_key/oauth2_client/oauth2_password/login) + 캐시/키별락/만료갱신/herd방지 + HttpActor 401 재인증. **비밀=env 참조(*_env)**. `scripts/smoke_auth.py` PASS.
+- 설계 근거: `docs/액터-인증-설계.md`. 폼 스펙: `docs/actor-form-mockup.html`(FE 핸드오프).
+- **컨펌 대기**: #21·#22는 팀장이 코드 리뷰 후 머지 예정(그래서 머지 보류).
+
+## 내일(다음 세션) 시작점 ★ — 스캔 파트
+1. **액터 PR 컨펌**: #21·#22 코드 리뷰 → 머지.
+2. **스캔 파트 구현** (POST /scans 이후 = 사용자 담당):
+   - **정찰(정적분석)**: 스캔 step① 리포 AST 분석 → 프로파일(model·system_prompt·defences·tools·rag) 추출 → 씨앗 필터. (`app/recon.py`, PoC ast_scanner 참고)
+   - **진화 파이프라인**: `orchestrator.run_evolution` 배선(retrieve→select→mutate→actor.send→judge→update→publish) + `tasks.run_scan`.
+   - **SSE + 로그**: `GET /scans/{id}/stream` 실시간(log/progress/finding/done 이벤트) + scan_events 재생.
+   - **실제 API 붙여 공격**: 액터로 더미앱(또는 실표적) 실발사 → judge 3계층 판정 → findings 저장.
+   - API명세 §4·§5 반영. `scans.config`의 auth_context(역할별)·safe_mode(드라이런) 배선.
+- (별개) **벡터DB 실제 적재**: `docs/벡터DB-적재계획.md` — retrieve 씨앗검색의 전제(진화 전에/병행).
+
+## 메모: 시연용 취약 표적 후보 (나중에 결정)
+액터는 config(url·body·response_path) 기반이라 표적 무관 → 시연 때 붙일 후보만 메모:
+- **우리 더미앱**(`app/api/dummy.py`, AcmeBank 카나리 FLAG): 결정론적·오프라인·CI/데모 앵커.
+- **DVLA** (github.com/ReversecLabs/damn-vulnerable-llm-agent): ReAct 에이전트, 도구오용 시나리오. Streamlit 8501 → 브라우저액터/shim 필요.
+- **DVAA** (github.com/opena2a-org/damn-vulnerable-ai-agent): "AI판 DVWA", Docker 9000 API.
+- **greshake/llm-security**: 간접 프롬프트 인젝션 예제(RAG 시나리오 근거).
+- 방향: 데모 앵커=더미앱, 현실 쇼케이스=DVLA/DVAA(URL만 교체). **실제 채택은 시연 준비 때 결정.**
 
 ## 현재 상태 한 줄
 문서·설계·ERD·기능명세·아키텍처 **최신 확정** + **벡터DB 소스조사·계획 완료**. `app/`은 **돌아가는 PoC(옛 11테이블 스펙)** — 오늘 정규화·플로우 미반영. 다음 = 디자인 → **벡터DB 실제 적재** → 개발세팅 → A. models 리팩터.
