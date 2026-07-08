@@ -1,0 +1,159 @@
+// AI 레드팀 도구 — ERD (DBML, dbdiagram.io) · 11개 테이블
+// 컬럼 note = 한글 논리명. 모든 테이블에 생성/수정/삭제 일시.
+
+Table users [note: '사용자'] {
+  id int [pk, increment, note: '사용자ID']
+  github_id varchar(64) [not null, note: '깃허브ID']
+  github_login varchar(128) [not null, note: '깃허브로그인']
+  name varchar(128) [note: '이름']
+  avatar_url varchar(512) [note: '프로필이미지']
+  access_token_enc varchar(512) [note: '액세스토큰(암호화)']
+  created_at timestamp [not null, note: '생성일시']
+  updated_at timestamp [not null, note: '수정일시']
+  deleted_at timestamp [note: '삭제일시']
+}
+
+Table targets [note: '공격대상'] {
+  id int [pk, increment, note: '대상ID']
+  user_id int [not null, ref: > users.id, note: '사용자ID']
+  name varchar(200) [not null, note: '대상명']
+  actor_type varchar(16) [not null, note: '액터유형']
+  config json [not null, note: '액터설정']
+  model_hint varchar(64) [note: '추정모델']
+  purpose varchar(256) [note: '용도']
+  system_prompt text [note: '시스템프롬프트']
+  repo_url varchar(512) [note: '리포주소']
+  ownership_verified boolean [not null, note: '소유확인여부']
+  verify_method varchar(32) [note: '확인방식']
+  verify_token varchar(64) [note: '확인토큰']
+  created_at timestamp [not null, note: '생성일시']
+  updated_at timestamp [not null, note: '수정일시']
+  deleted_at timestamp [note: '삭제일시']
+}
+
+Table atlas_techniques [note: 'ATLAS기법마스터'] {
+  id varchar(32) [pk, note: '기법ID']
+  name varchar(128) [not null, note: '기법명']
+  tactic varchar(64) [note: '전술']
+  category varchar(32) [note: '분류']
+  description text [note: '설명']
+  mitigation text [note: '완화책']
+  created_at timestamp [not null, note: '생성일시']
+  updated_at timestamp [not null, note: '수정일시']
+  deleted_at timestamp [note: '삭제일시']
+}
+
+Table scans [note: '스캔'] {
+  id int [pk, increment, note: '스캔ID']
+  target_id int [not null, ref: > targets.id, note: '대상ID']
+  status varchar(16) [not null, note: '상태']
+  config json [not null, note: '스캔설정']
+  progress json [not null, note: '진행상황']
+  started_at timestamp [note: '시작일시']
+  finished_at timestamp [note: '종료일시']
+  created_at timestamp [not null, note: '생성일시']
+  updated_at timestamp [not null, note: '수정일시']
+  deleted_at timestamp [note: '삭제일시']
+}
+
+Table recon_profiles [note: '정찰프로파일'] {
+  id int [pk, increment, note: '정찰ID']
+  scan_id int [not null, ref: > scans.id, note: '스캔ID']
+  target_id int [not null, ref: > targets.id, note: '대상ID']
+  model varchar(64) [note: '모델']
+  purpose varchar(256) [note: '용도']
+  defenses json [not null, note: '방어수단']
+  tools json [not null, note: '도구']
+  rag_sources json [not null, note: 'RAG소스']
+  source varchar(16) [note: '정보출처']
+  created_at timestamp [not null, note: '생성일시']
+  updated_at timestamp [not null, note: '수정일시']
+  deleted_at timestamp [note: '삭제일시']
+}
+
+Table objectives [note: '공격목표'] {
+  id int [pk, increment, note: '목표ID']
+  scan_id int [not null, ref: > scans.id, note: '스캔ID']
+  atlas_technique_id varchar(32) [ref: > atlas_techniques.id, note: '기법ID']
+  name varchar(128) [note: '목표명']
+  category varchar(32) [note: '분류']
+  status varchar(16) [not null, note: '상태']
+  best_score float [not null, note: '최고점수']
+  stop_reason varchar(32) [note: '종료사유']
+  created_at timestamp [not null, note: '생성일시']
+  updated_at timestamp [not null, note: '수정일시']
+  deleted_at timestamp [note: '삭제일시']
+}
+
+Table attempts [note: '공격시도'] {
+  id int [pk, increment, note: '시도ID']
+  objective_id int [not null, ref: > objectives.id, note: '목표ID']
+  parent_attempt_id int [ref: > attempts.id, note: '부모시도ID']
+  seed_case_id int [ref: > attack_cases.id, note: '씨앗공격ID']
+  generation int [not null, note: '세대']
+  prompt_text text [not null, note: '공격프롬프트']
+  response_text text [note: '대상응답']
+  score float [not null, note: '점수']
+  verdict varchar(16) [note: '판정']
+  judge_detail json [note: '판정상세']
+  mutation_op varchar(32) [note: '변이연산']
+  improvement text [note: '개선근거']
+  created_at timestamp [not null, note: '생성일시']
+  updated_at timestamp [not null, note: '수정일시']
+  deleted_at timestamp [note: '삭제일시']
+}
+
+Table findings [note: '발견취약점'] {
+  id int [pk, increment, note: '발견ID']
+  scan_id int [not null, ref: > scans.id, note: '스캔ID']
+  objective_id int [not null, ref: > objectives.id, note: '목표ID']
+  attempt_id int [not null, ref: > attempts.id, note: '시도ID']
+  atlas_technique_id varchar(32) [ref: > atlas_techniques.id, note: '기법ID']
+  severity varchar(16) [note: '심각도']
+  title varchar(256) [note: '제목']
+  evidence json [note: '증거']
+  mitigation text [note: '완화책']
+  created_at timestamp [not null, note: '생성일시']
+  updated_at timestamp [not null, note: '수정일시']
+  deleted_at timestamp [note: '삭제일시']
+}
+
+Table attack_cases [note: '공격코퍼스'] {
+  id int [pk, increment, note: '공격사례ID']
+  prompt_text text [not null, note: '공격프롬프트']
+  attack_type varchar(64) [note: '공격유형']
+  atlas_technique_id varchar(32) [ref: > atlas_techniques.id, note: '기법ID']
+  source varchar(64) [note: '출처']
+  worked_on json [not null, note: '성공모델']
+  verified boolean [not null, note: '검증여부']
+  tags json [not null, note: '태그']
+  embedding text [note: '임베딩벡터']
+  created_at timestamp [not null, note: '생성일시']
+  updated_at timestamp [not null, note: '수정일시']
+  deleted_at timestamp [note: '삭제일시']
+}
+
+Table scan_events [note: '스캔이벤트로그'] {
+  id int [pk, increment, note: '이벤트ID']
+  scan_id int [not null, ref: > scans.id, note: '스캔ID']
+  objective_id int [ref: > objectives.id, note: '목표ID']
+  event_type varchar(16) [not null, note: '이벤트유형']
+  payload json [note: '페이로드']
+  created_at timestamp [not null, note: '생성일시']
+  updated_at timestamp [not null, note: '수정일시']
+  deleted_at timestamp [note: '삭제일시']
+}
+
+Table scan_reports [note: '스캔통계리포트'] {
+  id int [pk, increment, note: '리포트ID']
+  scan_id int [not null, ref: > scans.id, note: '스캔ID']
+  total_objectives int [not null, note: '총목표수']
+  breached_count int [not null, note: '뚫린수']
+  coverage_pct float [not null, note: '커버리지(%)']
+  severity_counts json [not null, note: '심각도분포']
+  risk_score float [not null, note: '위험도점수']
+  generated_at timestamp [not null, note: '생성리포트일시']
+  created_at timestamp [not null, note: '생성일시']
+  updated_at timestamp [not null, note: '수정일시']
+  deleted_at timestamp [note: '삭제일시']
+}

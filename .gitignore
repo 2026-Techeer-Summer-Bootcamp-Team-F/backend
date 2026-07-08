@@ -1,0 +1,23 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# 시크릿 (절대 커밋 금지)
+.env
+.env.*
+!.env.example
+
+# 생성물 (로컬/도커로 재생성)
+*.db
+exports/
+
+# 에디터/OS/툴
+.DS_Store
+.omc/
+.idea/
+.vscode/
