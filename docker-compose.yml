@@ -38,6 +38,10 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+    # 개발용: 호스트 코드 마운트 + --reload → 편집 즉시 반영(리빌드 불필요)
+    volumes:
+      - ./:/app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
   # (확장) Celery 워커 — 진화엔진 별도 프로세스. celery app 배선 후 활성화.
   # worker:
