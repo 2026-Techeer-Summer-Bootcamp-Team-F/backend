@@ -60,6 +60,16 @@
 - 설계 근거: `docs/액터-인증-설계.md`. 폼 스펙: `docs/actor-form-mockup.html`(FE 핸드오프).
 - **컨펌 대기**: #21·#22는 팀장이 코드 리뷰 후 머지 예정(그래서 머지 보류).
 
+## 내일 체크리스트 ★ — 액터 PR 컨펌·머지 (CodeRabbit 기반)
+액터 파트 = **열린 PR 4개**(전부 스모크 PASS, 컨펌 대기). 내일: **CodeRabbit 리뷰 결과 확인 → 수정 → 컨펌 → 머지**.
+- [ ] **#21** config연동+더미앱 (독립, develop base) — CodeRabbit 보고 머지
+- [ ] **#26** 저장 API `POST /projects/{id}/actor` (독립, develop base) — CodeRabbit 보고 머지
+- [ ] **#23** auth (TokenProvider 6모드+401재인증) — CodeRabbit 보고 머지
+- [ ] **#27** session/멀티턴 — ⚠️ **#23 위에 스택**(base=feat/#22). **#23 먼저 머지 → #27 base를 develop로 retarget → 머지.**
+- 머지 순서: #21·#26 아무때나 / #23 먼저 → #27. 규칙: 브랜치·이슈 삭제 금지(Closes로 닫히는 건 OK).
+- 참고: 새로 만든 스모크(`scripts/smoke_actor·auth·save_actor·session.py`)는 컨테이너서 `PYTHONPATH=/app`로 실행. dev용 docker-compose 볼륨마운트+--reload는 #18에 포함.
+- 체크사항(달라진 것): actor_type=config 안 / 비밀=env(*_env) / 저장API 소유권검증은 get_current_user(팀원 JWT 미구현이라 501 의존, 완성되면 동작) / #27은 stacked PR.
+
 ## 내일(다음 세션) 시작점 ★ — 스캔 파트
 1. **액터 PR 컨펌**: #21·#22 코드 리뷰 → 머지.
 2. **스캔 파트 구현** (POST /scans 이후 = 사용자 담당):
