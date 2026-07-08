@@ -101,6 +101,19 @@ class ScanEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
+class ScanReport(Base):
+    """스캔 리포트 = 대시보드 통계 원본. API §5 /scans/{id}/report."""
+    __tablename__ = "scan_reports"
+    report_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scan_id: Mapped[int] = mapped_column(ForeignKey("scans.scan_id"), index=True, unique=True)
+    risk_score: Mapped[float] = mapped_column(default=0.0)          # 위험도
+    total_attempts: Mapped[int] = mapped_column(Integer, default=0)  # 총 시도
+    breached_attempts: Mapped[int] = mapped_column(Integer, default=0)  # 뚫린 시도
+    findings_count: Mapped[int] = mapped_column(Integer, default=0)  # 취약점 수
+    ai_summary: Mapped[str] = mapped_column(Text, default="")        # LLM 요약(§5)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
 # ── 공격 코퍼스 (corpus_ingest.py 산출물 = 씨앗 검색 대상) ──
 class AttackCase(Base):
     __tablename__ = "attack_cases"
