@@ -121,6 +121,42 @@ GitHub OAuth 시작. `state`(CSRF) 세팅 후 GitHub 인가 URL 반환/리다이
   "rag_sources": ["faq.pdf"], "source": "repo" }
 ```
 
+### `POST /projects/{id}/actor` 🔒
+**액터 구성 저장** — 동의 후 "액터 정보 입력" 화면에서 제출. `target_projects.config`(JSON)에 액터 설정 저장.
+엔진(스캔)이 `config`를 읽어 `config.actor_type`으로 액터 생성 → 발사.
+⚠️ `actor_type`은 **`config` 안**에 넣는다(DB에 별도 `actor_type` 컬럼 없음). `system_prompt`·`model`은 **전용 컬럼**(config 아님).
+
+- **요청 (HTTP 방식)**:
+```json
+{ "config": {
+    "actor_type": "http",                      // 필수 (config 안)
+    "url": "https://acmebank.com/api/chat",    // 필수
+    "method": "POST",                          // 기본 POST
+    "headers": {"Content-Type":"application/json", "Authorization":"Bearer ..."},
+    "body_template": "{\"message\":\"{{prompt}}\"}",  // 필수, {{prompt}} 치환
+    "response_path": "reply",                  // 필수, 응답 답변 경로
+    "auth": null,                              // (옵션) 로그인 플로우 — 아래
+    "session": null                            // (옵션) 멀티턴 — 아래
+  },
+  "system_prompt": "...",                      // (옵션) 전용 컬럼
+  "model": "..."                               // (옵션) 전용 컬럼
+}
+```
+- **요청 (Browser 방식, API 없는 채팅화면)**:
+```json
+{ "config": {
+    "actor_type": "browser",                   // 필수 (config 안)
+    "url": "https://acmebank.com/chat",        // 필수
+    "input_selector": "textarea#chat-input",   // 필수
+    "submit_selector": "button[type=submit]",  // 없으면 Enter
+    "output_selector": ".msg.assistant:last-child",  // 필수
+    "wait_ms": 8000
+  }}
+```
+- **(옵션) `config.auth`** (로그인 필요 앱): `{ "login_url", "credentials":{...}, "token_path", "token_header":"Authorization" }`
+- **(옵션) `config.session`** (멀티턴/상태유지): `{ "session_source":"header|cookie|body", "session_path":"세션ID 위치" }`
+- **200**: `Project` / **403**: 타인 / **404**: 없음 / **422**: 필수 필드 누락
+
 ### `PATCH /projects/{id}` 🔒
 등록한 프로젝트 수정(액터 config·용도·시스템프롬프트 등). 수정할 필드만 보냄.
 - 요청(부분): `{ "project_name"?, "config"?, "purpose"?, "system_prompt"?, "repo_url"? }`
