@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>액터 구성 폼 — 프론트 핸드오프</title>
+<style>
+  :root {
+    --bg:        #eef0f4;
+    --panel:     #ffffff;
+    --panel-2:   #f6f7fa;
+    --ink:       #1b2028;
+    --ink-soft:  #565f6e;
+    --ink-faint: #8a93a3;
+    --line:      #dfe3ea;
+    --line-soft: #e9ecf2;
+    --accent:    #d64d33;   /* 레드팀 = 표적/공격. 강조 1곳에만 */
+    --accent-ink:#ffffff;
+    --accent-wash:#fbeae5;
+    --req:       #d64d33;
+    --opt:       #6b7686;
+    --code-bg:   #10141b;
+    --code-ink:  #d7e0ee;
+    --code-key:  #8fb8ff;
+    --code-str:  #b7e3a0;
+    --code-punc: #7f8a9c;
+    --good:      #2f9e6b;
+    --radius: 10px;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", "Pretendard", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:        #0f1216;
+      --panel:     #171b21;
+      --panel-2:   #1d222a;
+      --ink:       #e8ecf2;
+      --ink-soft:  #a2acbb;
+      --ink-faint: #6b7688;
+      --line:      #2a313b;
+      --line-soft: #232932;
+      --accent:    #f26647;
+      --accent-ink:#1a0f0c;
+      --accent-wash:#2a1712;
+      --req:       #f47a5f;
+      --opt:       #8b96a6;
+      --code-bg:   #0a0d12;
+      --code-ink:  #d7e0ee;
+      --good:      #46c088;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:#eef0f4; --panel:#fff; --panel-2:#f6f7fa; --ink:#1b2028; --ink-soft:#565f6e;
+    --ink-faint:#8a93a3; --line:#dfe3ea; --line-soft:#e9ecf2; --accent:#d64d33;
+    --accent-ink:#fff; --accent-wash:#fbeae5; --req:#d64d33; --opt:#6b7686;
+    --code-bg:#10141b; --code-ink:#d7e0ee; --good:#2f9e6b;
+  }
+  :root[data-theme="dark"] {
+    --bg:#0f1216; --panel:#171b21; --panel-2:#1d222a; --ink:#e8ecf2; --ink-soft:#a2acbb;
+    --ink-faint:#6b7688; --line:#2a313b; --line-soft:#232932; --accent:#f26647;
+    --accent-ink:#1a0f0c; --accent-wash:#2a1712; --req:#f47a5f; --opt:#8b96a6;
+    --code-bg:#0a0d12; --code-ink:#d7e0ee; --good:#46c088;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:var(--sans); line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap { max-width:1120px; margin:0 auto; padding:32px 24px 80px; }
+
+  /* header */
+  header { margin-bottom:28px; }
+  .eyebrow {
+    font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--accent); font-weight:600; margin:0 0 8px;
+  }
+  h1 { font-size:26px; line-height:1.2; margin:0 0 6px; letter-spacing:-.01em; text-wrap:balance; }
+  .sub { color:var(--ink-soft); font-size:14.5px; margin:0; max-width:62ch; }
+  .endpoint {
+    display:inline-flex; align-items:center; gap:8px; margin-top:14px;
+    font-family:var(--mono); font-size:12.5px; background:var(--panel);
+    border:1px solid var(--line); border-radius:8px; padding:6px 11px; color:var(--ink-soft);
+  }
+  .endpoint b { color:var(--accent); font-weight:600; }
+  .endpoint .lock { color:var(--ink-faint); }
+
+  /* layout */
+  .grid { display:grid; grid-template-columns: 1fr 400px; gap:24px; align-items:start; }
+  @media (max-width:860px){ .grid { grid-template-columns:1fr; } }
+
+  .card {
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    padding:22px 22px 24px;
+  }
+  .card + .card { margin-top:20px; }
+
+  /* toggle */
+  .seg {
+    display:inline-flex; background:var(--panel-2); border:1px solid var(--line);
+    border-radius:9px; padding:3px; gap:3px; margin-bottom:4px;
+  }
+  .seg button {
+    font-family:var(--sans); font-size:13.5px; font-weight:550; cursor:pointer;
+    border:0; background:transparent; color:var(--ink-soft); padding:8px 16px;
+    border-radius:6px; display:flex; align-items:center; gap:8px; transition:.15s;
+  }
+  .seg button .tag { font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); }
+  .seg button[aria-selected="true"] {
+    background:var(--accent); color:var(--accent-ink); box-shadow:0 1px 3px rgba(0,0,0,.18);
+  }
+  .seg button[aria-selected="true"] .tag { color:var(--accent-ink); opacity:.8; }
+  .seg-note { font-size:12.5px; color:var(--ink-faint); margin:10px 0 0; }
+
+  /* section head inside card */
+  .shead {
+    font-family:var(--mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--ink-faint); font-weight:600; margin:0 0 16px; padding-bottom:10px;
+    border-bottom:1px solid var(--line-soft); display:flex; justify-content:space-between; align-items:center;
+  }
+  .shead .pill {
+    font-family:var(--sans); text-transform:none; letter-spacing:0; font-size:11px;
+    color:var(--opt); background:var(--panel-2); border:1px solid var(--line);
+    padding:2px 8px; border-radius:20px; font-weight:500;
+  }
+
+  /* field */
+  .field { margin-bottom:18px; }
+  .field:last-child { margin-bottom:0; }
+  .field label {
+    display:flex; align-items:baseline; gap:8px; margin-bottom:6px;
+  }
+  .field .name { font-family:var(--mono); font-size:13px; font-weight:600; color:var(--ink); }
+  .badge {
+    font-size:10px; font-weight:600; letter-spacing:.04em; text-transform:uppercase;
+    padding:1px 6px; border-radius:4px; line-height:1.5;
+  }
+  .badge.req { color:var(--req); background:var(--accent-wash); }
+  .badge.opt { color:var(--opt); border:1px solid var(--line); }
+  .hint { font-size:12.5px; color:var(--ink-faint); margin-left:auto; }
+  .desc { font-size:12.5px; color:var(--ink-soft); margin:0 0 8px; }
+
+  input[type=text], select, textarea {
+    width:100%; font-family:var(--mono); font-size:13px; color:var(--ink);
+    background:var(--panel-2); border:1px solid var(--line); border-radius:8px;
+    padding:9px 11px; transition:border-color .15s, box-shadow .15s;
+  }
+  textarea { resize:vertical; min-height:44px; line-height:1.5; }
+  input::placeholder, textarea::placeholder { color:var(--ink-faint); }
+  input:focus, select:focus, textarea:focus {
+    outline:none; border-color:var(--accent);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .row2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:520px){ .row2 { grid-template-columns:1fr; } }
+
+  /* optional collapsibles */
+  details {
+    border:1px dashed var(--line); border-radius:8px; padding:0; margin-top:6px; background:var(--panel-2);
+  }
+  details[open] { padding-bottom:16px; }
+  summary {
+    cursor:pointer; padding:11px 14px; font-size:13px; color:var(--ink-soft); font-weight:550;
+    display:flex; align-items:center; gap:9px; list-style:none;
+  }
+  summary::-webkit-details-marker { display:none; }
+  summary .chev { transition:transform .18s; color:var(--ink-faint); font-size:11px; }
+  details[open] summary .chev { transform:rotate(90deg); }
+  summary .badge { margin-left:auto; }
+  details .inner { padding:0 14px; }
+
+  /* JSON preview */
+  aside { position:sticky; top:24px; }
+  .preview {
+    background:var(--code-bg); border:1px solid var(--line); border-radius:var(--radius);
+    overflow:hidden;
+  }
+  .preview .bar {
+    display:flex; align-items:center; justify-content:space-between; padding:11px 15px;
+    border-bottom:1px solid rgba(255,255,255,.07);
+  }
+  .preview .bar .t {
+    font-family:var(--mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase;
+    color:#9aa6b8; font-weight:600;
+  }
+  .preview .bar .dot { display:flex; gap:6px; }
+  .preview .bar .dot i { width:9px; height:9px; border-radius:50%; display:block; }
+  .preview .bar .dot i:nth-child(1){ background:#f26647; }
+  .preview .bar .dot i:nth-child(2){ background:#e2b23c; opacity:.85; }
+  .preview .bar .dot i:nth-child(3){ background:#46c088; opacity:.7; }
+  pre {
+    margin:0; padding:16px 15px; font-family:var(--mono); font-size:12.5px; line-height:1.6;
+    color:var(--code-ink); overflow-x:auto; white-space:pre;
+  }
+  pre .k { color:var(--code-key); }
+  pre .s { color:var(--code-str); }
+  pre .p { color:var(--code-punc); }
+  pre .c { color:var(--code-punc); font-style:italic; }
+
+  .note-card {
+    margin-top:16px; background:var(--panel); border:1px solid var(--line);
+    border-radius:var(--radius); padding:16px 18px;
+  }
+  .note-card h3 {
+    font-size:12px; font-family:var(--mono); letter-spacing:.1em; text-transform:uppercase;
+    color:var(--ink-faint); margin:0 0 12px;
+  }
+  .note-card ul { margin:0; padding-left:0; list-style:none; display:flex; flex-direction:column; gap:10px; }
+  .note-card li { font-size:12.8px; color:var(--ink-soft); display:flex; gap:9px; line-height:1.45; }
+  .note-card li code {
+    font-family:var(--mono); font-size:11.5px; background:var(--panel-2); color:var(--ink);
+    padding:1px 5px; border-radius:4px; border:1px solid var(--line-soft); white-space:nowrap;
+  }
+  .note-card li .m { color:var(--accent); font-weight:700; flex:none; }
+
+  /* help / guide box */
+  .guide {
+    background:var(--panel-2); border:1px solid var(--line); border-left:3px solid var(--accent);
+    border-radius:8px; padding:14px 16px; margin:4px 0 20px;
+  }
+  .guide h4 {
+    font-size:12.5px; margin:0 0 11px; color:var(--ink); font-weight:650;
+    display:flex; align-items:center; gap:8px;
+  }
+  .guide ol { margin:0; padding-left:19px; display:flex; flex-direction:column; gap:7px; }
+  .guide li { font-size:12.8px; color:var(--ink-soft); line-height:1.5; }
+  .guide code, .guide kbd {
+    font-family:var(--mono); font-size:11.5px; background:var(--panel);
+    border:1px solid var(--line-soft); border-radius:4px; padding:1px 5px; color:var(--ink); white-space:nowrap;
+  }
+  .guide kbd { box-shadow:0 1px 0 var(--line); font-weight:600; }
+  .guide .map { margin-top:13px; border-top:1px solid var(--line-soft); padding-top:12px;
+    display:grid; grid-template-columns:auto 1fr; gap:8px 16px; align-items:baseline; }
+  .guide .map .f { font-family:var(--mono); font-size:12px; color:var(--accent); font-weight:600; }
+  .guide .map .d { font-size:12.5px; color:var(--ink-soft); }
+  .info {
+    background:var(--accent-wash); border:1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    border-radius:8px; padding:12px 14px; font-size:12.8px; color:var(--ink-soft); line-height:1.55; margin-top:2px;
+  }
+  .info b { color:var(--ink); }
+  .info code { font-family:var(--mono); font-size:11px; background:var(--panel); border:1px solid var(--line-soft); border-radius:4px; padding:1px 5px; }
+
+  /* auth mode groups + role seg */
+  .am { display:none; }
+  .am.on { display:block; }
+  .seg.sm { margin:0; }
+  .seg.sm button { padding:6px 13px; font-size:12.5px; }
+  .pill-hot {
+    color:var(--accent) !important;
+    border-color:color-mix(in srgb, var(--accent) 40%, transparent) !important;
+    background:var(--accent-wash) !important; font-weight:600 !important;
+  }
+  .authwrap { margin-top:24px; border-top:1px solid var(--line-soft); padding-top:20px; }
+
+  /* reset (standalone) */
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+
+  /* theme toggle */
+  .theme-btn {
+    position:fixed; top:16px; right:16px; z-index:5; width:38px; height:38px; border-radius:9px;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink-soft); cursor:pointer;
+    font-size:16px; display:flex; align-items:center; justify-content:center;
+  }
+  .theme-btn:hover { color:var(--accent); border-color:var(--accent); }
+  footer { margin-top:32px; font-size:12px; color:var(--ink-faint); text-align:center; font-family:var(--mono); }
+</style>
+</head>
+<body>
+
+<button class="theme-btn" id="themeBtn" title="테마 전환" aria-label="테마 전환">◐</button>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Frontend Handoff · 표적 등록 → 액터 구성</p>
+    <h1>액터 구성 폼</h1>
+    <p class="sub">동의 화면 다음 단계. 공격 대상(챗봇)에 어떻게 접속·발사할지 입력받아 저장한다. 스캔 엔진은 저장된 <code>config</code>를 읽어 액터를 만들어 발사한다.</p>
+    <span class="endpoint"><b>POST</b> /projects/{id}/actor <span class="lock">· 🔒 인증 필요</span></span>
+  </header>
+
+  <div class="grid">
+    <!-- ============ LEFT: FORM ============ -->
+    <div>
+      <div class="card">
+        <div class="seg" role="tablist" aria-label="액터 방식">
+          <button role="tab" id="tab-http" aria-selected="true" onclick="setType('http')">
+            HTTP <span class="tag">API 있음</span>
+          </button>
+          <button role="tab" id="tab-browser" aria-selected="false" onclick="setType('browser')">
+            Browser <span class="tag">채팅 화면만</span>
+          </button>
+        </div>
+        <p class="seg-note" id="segNote">API 엔드포인트로 직접 발사. <b>시연은 이 방식.</b></p>
+      </div>
+
+      <!-- ---- HTTP fields ---- -->
+      <div class="card" id="httpCard">
+        <p class="shead">HTTP 설정 <span class="pill">config</span></p>
+
+        <div class="field">
+          <label><span class="name">url</span><span class="badge req">필수</span>
+            <span class="hint">타겟 챗 엔드포인트</span></label>
+          <input type="text" data-key="url" oninput="render()" placeholder="https://acmebank.com/api/chat">
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label><span class="name">method</span><span class="badge opt">선택</span></label>
+            <select data-key="method" onchange="render()">
+              <option value="POST" selected>POST</option>
+              <option value="GET">GET</option>
+            </select>
+          </div>
+          <div class="field">
+            <label><span class="name">response_path</span><span class="badge req">필수</span></label>
+            <input type="text" data-key="response_path" oninput="render()" placeholder="reply">
+            <p class="desc" style="margin-top:6px">응답 JSON에서 답변 위치. 예: <code style="font-size:11px">choices.0.message.content</code></p>
+          </div>
+        </div>
+
+        <div class="field">
+          <label><span class="name">headers</span><span class="badge opt">선택</span>
+            <span class="hint">JSON · 인증 토큰 여기</span></label>
+          <textarea data-key="headers" oninput="render()" rows="2" placeholder='{"Content-Type":"application/json","Authorization":"Bearer ..."}'></textarea>
+        </div>
+
+        <div class="field">
+          <label><span class="name">body_template</span><span class="badge req">필수</span></label>
+          <p class="desc"><code style="font-size:11px">{{prompt}}</code> 자리에 공격 문장이 치환된다.</p>
+          <textarea data-key="body_template" oninput="render()" rows="2" placeholder='{"message":"{{prompt}}"}'>{"message":"{{prompt}}"}</textarea>
+        </div>
+
+        <!-- AUTH — 시나리오 핵심 축 -->
+        <div class="authwrap">
+          <p class="shead" style="border:0; padding:0; margin:0 0 8px">
+            로그인 / 인증 <span class="pill pill-hot">시나리오 핵심 축</span>
+          </p>
+          <div class="info" style="margin-bottom:16px">
+            <b>로그인 여부 = 공격 표면 자체가 달라진다.</b> 비로그인은 탈옥·프롬프트 유출 정도지만, 로그인하면 타인 PII 조회·도구 실행(이체·메일)까지 열린다. → 상태별로 나눠 스캔해 비교하는 게 리포트의 핵심.
+            <br><br>⚠️ <b>비밀번호·시크릿은 값이 아니라 env 변수 <i>이름</i>으로 입력</b>한다 (필드명 <code>*_env</code>). DB 평문 저장 금지 — 확정된 보안 규칙.
+          </div>
+
+          <div class="field">
+            <label><span class="name">역할 (자격증명 세트)</span><span class="badge opt">A4</span>
+              <span class="hint">역할마다 세트 1개씩</span></label>
+            <div class="seg sm" role="tablist" aria-label="역할">
+              <button type="button" data-role="anon" aria-selected="true" onclick="setRole('anon')">비로그인 <span class="tag">anon</span></button>
+              <button type="button" data-role="user" aria-selected="false" onclick="setRole('user')">유저 <span class="tag">user</span></button>
+              <button type="button" data-role="admin" aria-selected="false" onclick="setRole('admin')">관리자 <span class="tag">admin</span></button>
+            </div>
+            <p class="desc" style="margin-top:8px">스캔 시 <code>scans.config.auth_context</code>로 "어느 역할로 공격할지" 고른다. 여기선 역할별 자격증명을 등록.</p>
+          </div>
+
+          <div class="field">
+            <label><span class="name">auth.type</span><span class="badge opt">인증 방식</span></label>
+            <select data-key="auth.type" onchange="updateAuthMode();render()">
+              <option value="none" selected>none — 인증 없음 (비로그인)</option>
+              <option value="bearer">bearer — 정적 토큰 1개</option>
+              <option value="api_key">api_key — 헤더/쿼리에 키</option>
+              <option value="oauth2_client">oauth2_client — client_credentials</option>
+              <option value="oauth2_password">oauth2_password — password grant</option>
+              <option value="login">login — 로그인 엔드포인트에 POST</option>
+            </select>
+          </div>
+
+          <div class="am am-bearer">
+            <div class="field"><label><span class="name">token_env</span><span class="badge req">필수</span>
+              <span class="hint">토큰 담은 env 변수명</span></label>
+              <input type="text" data-key="auth.token_env" oninput="render()" placeholder="TARGET42_TOKEN"></div>
+          </div>
+
+          <div class="am am-apikey">
+            <div class="field"><label><span class="name">key_env</span><span class="badge req">필수</span>
+              <span class="hint">키 담은 env 변수명</span></label>
+              <input type="text" data-key="auth.key_env" oninput="render()" placeholder="TARGET42_APIKEY"></div>
+          </div>
+
+          <div class="am am-oauth">
+            <div class="field"><label><span class="name">token_url</span><span class="badge req">필수</span></label>
+              <input type="text" data-key="auth.token_url" oninput="render()" placeholder="https://target/oauth/token"></div>
+            <div class="row2">
+              <div class="field"><label><span class="name">client_id</span><span class="badge req">필수</span></label>
+                <input type="text" data-key="auth.client_id" oninput="render()" placeholder="abc"></div>
+              <div class="field"><label><span class="name">client_secret_env</span><span class="badge req">필수</span></label>
+                <input type="text" data-key="auth.client_secret_env" oninput="render()" placeholder="TARGET42_SECRET"></div>
+            </div>
+            <div class="field"><label><span class="name">scope</span><span class="badge opt">선택</span></label>
+              <input type="text" data-key="auth.scope" oninput="render()" placeholder="chat"></div>
+          </div>
+
+          <div class="am am-oauthpw">
+            <div class="row2">
+              <div class="field"><label><span class="name">username</span><span class="badge req">필수</span></label>
+                <input type="text" data-key="auth.username" oninput="render()" placeholder="redteam-bot"></div>
+              <div class="field"><label><span class="name">password_env</span><span class="badge req">필수</span></label>
+                <input type="text" data-key="auth.password_env" oninput="render()" placeholder="TARGET42_PW"></div>
+            </div>
+          </div>
+
+          <div class="am am-login">
+            <div class="field"><label><span class="name">login_url</span><span class="badge req">필수</span></label>
+              <input type="text" data-key="auth.login_url" oninput="render()" placeholder="https://target/api/login"></div>
+            <div class="field"><label><span class="name">body_template</span><span class="badge req">필수</span>
+              <span class="hint">{{password}} 치환</span></label>
+              <textarea data-key="auth.login_body" oninput="render()" rows="2" placeholder='{"user":"bot","pw":"{{password}}"}'></textarea></div>
+            <div class="row2">
+              <div class="field"><label><span class="name">password_env</span><span class="badge req">필수</span></label>
+                <input type="text" data-key="auth.login_pw_env" oninput="render()" placeholder="TARGET42_PW"></div>
+              <div class="field"><label><span class="name">token_path</span><span class="badge req">필수</span>
+                <span class="hint">응답 dot-path</span></label>
+                <input type="text" data-key="auth.token_path" oninput="render()" placeholder="data.accessToken"></div>
+            </div>
+            <div class="row2">
+              <div class="field"><label><span class="name">expires_in_path</span><span class="badge opt">선택</span></label>
+                <input type="text" data-key="auth.expires_in_path" oninput="render()" placeholder="data.expiresIn"></div>
+              <div class="field"><label><span class="name">default_ttl</span><span class="badge opt">선택 · 초</span></label>
+                <input type="text" data-key="auth.default_ttl" oninput="render()" placeholder="900"></div>
+            </div>
+          </div>
+
+          <div class="am am-inject">
+            <details style="margin-top:6px">
+              <summary><span class="chev">▶</span> inject — 토큰을 어디에 붙일지 <span class="badge opt">기본 header/Authorization</span></summary>
+              <div class="inner">
+                <div class="row2" style="margin-top:8px">
+                  <div class="field"><label><span class="name">inject.in</span></label>
+                    <select data-key="auth.inject_in" onchange="render()">
+                      <option value="header" selected>header</option><option value="query">query</option><option value="body">body</option>
+                    </select></div>
+                  <div class="field"><label><span class="name">inject.name</span></label>
+                    <input type="text" data-key="auth.inject_name" oninput="render()" placeholder="Authorization"></div>
+                </div>
+                <div class="field"><label><span class="name">inject.format</span></label>
+                  <input type="text" data-key="auth.inject_format" oninput="render()" placeholder="Bearer {token}"></div>
+              </div>
+            </details>
+          </div>
+        </div>
+
+        <details style="margin-top:16px">
+          <summary><span class="chev">▶</span> session — 멀티턴/상태유지 <span class="badge opt">선택 · 후순위</span></summary>
+          <div class="inner">
+            <p class="desc" style="margin-top:2px">응답에서 세션ID를 뽑아 다음 요청에 재주입(대화 상태 유지). 크레센도(멀티턴) 공격용 — 단일턴 데모엔 불필요.</p>
+            <div class="row2">
+              <div class="field"><label><span class="name">session_source</span></label>
+                <select data-key="session.session_source" onchange="render()">
+                  <option value="">—</option><option value="header">header</option>
+                  <option value="cookie">cookie</option><option value="body">body</option>
+                </select></div>
+              <div class="field"><label><span class="name">session_path</span></label>
+                <input type="text" data-key="session.session_path" oninput="render()" placeholder="session_id"></div>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <!-- ---- Browser fields ---- -->
+      <div class="card" id="browserCard" hidden>
+        <p class="shead">Browser 설정 <span class="pill">config</span></p>
+        <p class="desc" style="margin-top:-4px">API가 없는 채팅 화면용. Playwright가 입력창에 타이핑→전송→응답 추출. 셀렉터를 사람이 찾아 넣어야 해 HTTP보다 번거롭다.</p>
+
+        <div class="guide">
+          <h4>🔍 CSS 셀렉터 찾는 법 (개발자도구)</h4>
+          <ol>
+            <li>타겟 채팅 페이지에서 <kbd>F12</kbd> (Mac은 <kbd>⌥⌘I</kbd>) 눌러 <b>개발자도구</b> 열기</li>
+            <li>왼쪽 위 <b>요소 선택 아이콘</b>(<code>⌖</code> 화살표) 클릭</li>
+            <li>페이지에서 원하는 요소(입력창 등) <b>클릭</b> → HTML이 하이라이트됨</li>
+            <li>하이라이트된 줄 <b>우클릭 → Copy → Copy selector</b></li>
+            <li>복사된 값을 아래 칸에 <b>붙여넣기</b></li>
+          </ol>
+          <div class="map">
+            <span class="f">input_selector</span><span class="d"><b>입력창</b>(텍스트 치는 곳)을 선택 → copy selector</span>
+            <span class="f">submit_selector</span><span class="d"><b>전송(▶) 버튼</b>을 선택. 버튼 없고 Enter로 보내면 비워둠</span>
+            <span class="f">output_selector</span><span class="d">챗봇 <b>답변 말풍선</b>을 선택. 보통 마지막 답이라 <code>:last-child</code>가 붙음</span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label><span class="name">url</span><span class="badge req">필수</span></label>
+          <input type="text" data-key="b.url" oninput="render()" placeholder="https://acmebank.com/chat">
+        </div>
+        <div class="field">
+          <label><span class="name">input_selector</span><span class="badge req">필수</span>
+            <span class="hint">입력창 CSS 셀렉터</span></label>
+          <input type="text" data-key="b.input_selector" oninput="render()" placeholder="textarea#chat-input">
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label><span class="name">submit_selector</span><span class="badge opt">선택</span></label>
+            <input type="text" data-key="b.submit_selector" oninput="render()" placeholder="button[type=submit] · 없으면 Enter">
+          </div>
+          <div class="field">
+            <label><span class="name">wait_ms</span><span class="badge opt">선택</span></label>
+            <input type="text" data-key="b.wait_ms" oninput="render()" placeholder="8000">
+          </div>
+        </div>
+        <div class="field">
+          <label><span class="name">output_selector</span><span class="badge req">필수</span>
+            <span class="hint">응답 말풍선 셀렉터</span></label>
+          <input type="text" data-key="b.output_selector" oninput="render()" placeholder=".msg.assistant:last-child">
+        </div>
+
+        <details style="margin-top:18px">
+          <summary><span class="chev">▶</span> 로그인 / 세션 — 브라우저는 이렇게 다름 <span class="badge opt">선택 · 후순위</span></summary>
+          <div class="inner">
+            <div class="info" style="margin-bottom:14px">
+              브라우저는 실제 크롬처럼 <b>쿠키를 자동으로 들고 다녀서</b>, 한 번 로그인하면 스캔 내내 로그인 상태가 유지된다.
+              멀티턴 대화도 같은 탭에서 이어지니 <b>세션이 공짜로 유지</b>됨. → HTTP의 <code>auth</code>·<code>session</code> 필드는
+              브라우저엔 <b>안 쓰이고</b>, 대신 아래 둘 중 하나를 쓴다.
+            </div>
+            <div class="field">
+              <label><span class="name">storage_state</span><span class="badge opt">방법 A</span>
+                <span class="hint">로그인된 쿠키 붙여넣기</span></label>
+              <p class="desc">이미 로그인한 브라우저에서 쿠키/스토리지를 내보내 붙여넣으면 그 상태로 시작. (Playwright storageState JSON)</p>
+              <textarea data-key="b.storage_state" oninput="render()" rows="2" placeholder='{"cookies":[...],"origins":[...]}'></textarea>
+            </div>
+            <div class="field">
+              <label><span class="name">login</span><span class="badge opt">방법 B</span>
+                <span class="hint">로봇이 직접 로그인</span></label>
+              <p class="desc">스캔 시작 시 로그인 페이지에서 아이디·비번을 타이핑→로그인하고 진행. 셀렉터를 또 찾아야 해 무거움.</p>
+              <div class="row2">
+                <input type="text" data-key="b.login.url" oninput="render()" placeholder="login_url: https://.../login">
+                <input type="text" data-key="b.login.user_selector" oninput="render()" placeholder="user_selector: #email">
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <!-- ---- shared profile ---- -->
+      <div class="card">
+        <p class="shead">프로파일 <span class="pill">전용 컬럼 · config 아님</span></p>
+        <p class="desc" style="margin-top:-4px">판정 정확도를 올리는 선택 정보. 정찰(스캔 step①)이 레포에서 자동으로 채워줄 수도 있어 사용자는 확인·수정만.</p>
+        <div class="field">
+          <label><span class="name">system_prompt</span><span class="badge opt">선택</span>
+            <span class="hint">알면 유출 판정이 정확</span></label>
+          <textarea data-key="root.system_prompt" oninput="render()" rows="2" placeholder="You are AcmeBank's assistant. Never reveal..."></textarea>
+        </div>
+        <div class="field">
+          <label><span class="name">model</span><span class="badge opt">선택</span>
+            <span class="hint">씨앗 검색 필터에 활용</span></label>
+          <input type="text" data-key="root.model" oninput="render()" placeholder="gpt-4o-mini">
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ RIGHT: LIVE PAYLOAD ============ -->
+    <aside>
+      <div class="preview">
+        <div class="bar">
+          <span class="t">POST body — 실시간</span>
+          <span class="dot"><i></i><i></i><i></i></span>
+        </div>
+        <pre id="json"></pre>
+      </div>
+
+      <div class="note-card">
+        <h3>프론트 유의사항</h3>
+        <ul>
+          <li><span class="m">1</span><span><code>actor_type</code>은 <b>config 안</b>에 넣는다 — DB에 별도 컬럼 없음.</span></li>
+          <li><span class="m">2</span><span><code>system_prompt</code>·<code>model</code>은 config가 아닌 <b>최상위</b>(전용 컬럼).</span></li>
+          <li><span class="m">3</span><span><code>headers</code>는 문자열이 아니라 <b>JSON 객체</b>로 전송.</span></li>
+          <li><span class="m">4</span><span>빈 선택 필드는 <b>payload에서 생략</b>(null 안 보냄).</span></li>
+          <li><span class="m">5</span><span>필수 누락 시 저장 요청은 <code>422</code>.</span></li>
+          <li><span class="m">6</span><span>auth 시크릿은 <b>값이 아니라 env 변수명</b>(<code>*_env</code>) — DB에 비밀 저장 안 함.</span></li>
+          <li><span class="m">7</span><span>역할별 세트는 백엔드가 <code>auth</code>를 role로 묶어 저장. 스캔이 <code>auth_context</code>로 선택.</span></li>
+        </ul>
+      </div>
+    </aside>
+  </div>
+
+  <footer>AI 레드팀 · 액터 구성 스펙 (2026-07-08 확정) · API-명세.md §3 와 동기화</footer>
+</div>
+
+<script>
+  let type = 'http';
+  let role = 'anon';
+
+  function setRole(r){
+    role = r;
+    document.querySelectorAll('[data-role]').forEach(b => b.setAttribute('aria-selected', b.dataset.role === r));
+    render();
+  }
+
+  function updateAuthMode(){
+    const t = (document.querySelector('[data-key="auth.type"]') || {}).value || 'none';
+    const groups = {
+      none: [],
+      bearer: ['am-bearer','am-inject'],
+      api_key: ['am-apikey','am-inject'],
+      oauth2_client: ['am-oauth','am-inject'],
+      oauth2_password: ['am-oauth','am-oauthpw','am-inject'],
+      login: ['am-login','am-inject'],
+    }[t] || [];
+    document.querySelectorAll('.am').forEach(el =>
+      el.classList.toggle('on', groups.some(c => el.classList.contains(c))));
+  }
+
+  function setType(t){
+    type = t;
+    document.getElementById('tab-http').setAttribute('aria-selected', t==='http');
+    document.getElementById('tab-browser').setAttribute('aria-selected', t==='browser');
+    document.getElementById('httpCard').hidden = (t!=='http');
+    document.getElementById('browserCard').hidden = (t!=='browser');
+    document.getElementById('segNote').innerHTML = t==='http'
+      ? 'API 엔드포인트로 직접 발사. <b>시연은 이 방식.</b>'
+      : 'API 없는 실제 앱도 공격 가능함을 보여주는 부가 데모.';
+    render();
+  }
+
+  function val(key){
+    const el = document.querySelector(`[data-key="${key}"]`);
+    return el ? el.value.trim() : '';
+  }
+
+  function build(){
+    const cfg = { actor_type: type };
+    if (type === 'http') {
+      if (val('url')) cfg.url = val('url');
+      const m = val('method'); if (m && m !== 'POST') cfg.method = m;
+      const h = val('headers');
+      if (h) { try { cfg.headers = JSON.parse(h); } catch(e){ cfg.headers = '⚠ 유효한 JSON 아님'; } }
+      if (val('body_template')) cfg.body_template = val('body_template');
+      if (val('response_path')) cfg.response_path = val('response_path');
+      const at = val('auth.type') || 'none';
+      if (at !== 'none') {
+        const a = { role: role, type: at };
+        if (at === 'bearer' && val('auth.token_env')) a.token_env = val('auth.token_env');
+        if (at === 'api_key' && val('auth.key_env')) a.key_env = val('auth.key_env');
+        if (at === 'oauth2_client' || at === 'oauth2_password') {
+          ['token_url','client_id','client_secret_env','scope'].forEach(k=>{ if(val('auth.'+k)) a[k]=val('auth.'+k); });
+        }
+        if (at === 'oauth2_password') {
+          if (val('auth.username')) a.username = val('auth.username');
+          if (val('auth.password_env')) a.password_env = val('auth.password_env');
+        }
+        if (at === 'login') {
+          if (val('auth.login_url')) a.login_url = val('auth.login_url');
+          if (val('auth.login_body')) a.body_template = val('auth.login_body');
+          if (val('auth.login_pw_env')) a.password_env = val('auth.login_pw_env');
+          if (val('auth.token_path')) a.token_path = val('auth.token_path');
+          if (val('auth.expires_in_path')) a.expires_in_path = val('auth.expires_in_path');
+          if (val('auth.default_ttl')) a.default_ttl = Number(val('auth.default_ttl')) || val('auth.default_ttl');
+        }
+        const inj = {};
+        if (val('auth.inject_in') && val('auth.inject_in') !== 'header') inj.in = val('auth.inject_in');
+        if (val('auth.inject_name')) inj.name = val('auth.inject_name');
+        if (val('auth.inject_format')) inj.format = val('auth.inject_format');
+        if (Object.keys(inj).length) a.inject = inj;
+        cfg.auth = a;
+      }
+      const ses = {};
+      ['session_source','session_path'].forEach(k=>{ if(val('session.'+k)) ses[k]=val('session.'+k); });
+      if (Object.keys(ses).length) cfg.session = ses;
+    } else {
+      if (val('b.url')) cfg.url = val('b.url');
+      if (val('b.input_selector')) cfg.input_selector = val('b.input_selector');
+      if (val('b.submit_selector')) cfg.submit_selector = val('b.submit_selector');
+      if (val('b.output_selector')) cfg.output_selector = val('b.output_selector');
+      if (val('b.wait_ms')) cfg.wait_ms = Number(val('b.wait_ms')) || val('b.wait_ms');
+      const ss = val('b.storage_state');
+      if (ss) { try { cfg.storage_state = JSON.parse(ss); } catch(e){ cfg.storage_state = '⚠ 유효한 JSON 아님'; } }
+      const login = {};
+      if (val('b.login.url')) login.url = val('b.login.url');
+      if (val('b.login.user_selector')) login.user_selector = val('b.login.user_selector');
+      if (Object.keys(login).length) cfg.login = login;
+    }
+    const body = { config: cfg };
+    if (val('root.system_prompt')) body.system_prompt = val('root.system_prompt');
+    if (val('root.model')) body.model = val('root.model');
+    return body;
+  }
+
+  // minimal JSON syntax highlighter
+  function hi(obj){
+    let s = JSON.stringify(obj, null, 2);
+    s = s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    s = s.replace(/"([^"]+)":/g, '<span class="k">"$1"</span><span class="p">:</span>');
+    s = s.replace(/: "([^"]*)"/g, ': <span class="s">"$1"</span>');
+    s = s.replace(/: (\d+)/g, ': <span class="s">$1</span>');
+    s = s.replace(/[{}\[\],]/g, m => '<span class="p">'+m+'</span>');
+    return s;
+  }
+
+  function render(){
+    document.getElementById('json').innerHTML = hi(build());
+  }
+
+  // theme toggle
+  document.getElementById('themeBtn').onclick = () => {
+    const r = document.documentElement;
+    const cur = r.getAttribute('data-theme')
+      || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    r.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+  };
+
+  updateAuthMode();
+  render();
+</script>
+
+</body>
+</html>
