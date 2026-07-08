@@ -22,7 +22,7 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
+      - "6380:6379"          # 호스트 6380 (6379는 다른 프로젝트가 점유). 컨테이너 내부는 6379 그대로
 
   backend:
     build: .
