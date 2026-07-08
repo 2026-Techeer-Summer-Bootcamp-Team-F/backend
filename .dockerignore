@@ -1,0 +1,25 @@
+# 빌드 컨텍스트에서 제외 (이미지 작게·빌드 빠르게)
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 대용량 생성물 (컨테이너 안에서 재생성/마운트)
+*.db
+exports/
+
+# 시크릿·로컬
+.env
+.env.*
+!.env.example
+
+# 툴/OS/문서
+.git/
+.gitignore
+.omc/
+.DS_Store
+.idea/
+.vscode/
+docs/
+README.md
