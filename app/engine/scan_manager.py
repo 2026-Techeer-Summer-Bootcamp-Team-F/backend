@@ -14,7 +14,10 @@ from ..config import settings
 from ..models import ScanEvent
 
 # 방송용 Redis 연결(발행 전용, 동기). 워커·API 어디서든 import해 씀.
-_redis = redis.Redis.from_url(settings.redis_url)
+# 타임아웃: Redis 지연·네트워크 문제 시 동기 publish()가 오래 막히지 않게 상한.
+_redis = redis.Redis.from_url(
+    settings.redis_url, socket_timeout=5, socket_connect_timeout=5
+)
 
 
 def channel(scan_id: int) -> str:
@@ -30,7 +33,8 @@ def publish(scan_id: int, event_type: str, payload: dict,
     - db 주면 scan_events에 영속화(유실복구 원본). None이면 방송만.
     - objective_id 주면 payload에 함께(어느 목표 이벤트인지).
     """
-    data = {"event": event_type, **payload}
+    # payload를 먼저 펴고 event를 나중에 → 호출자 payload에 "event"가 있어도 event_type이 이김
+    data = {**payload, "event": event_type}
     if objective_id is not None:
         data["objective_id"] = objective_id
     # ① persist: DB에 먼저(순번=scan_events_id → SSE ?after= 유실복구 원본)
