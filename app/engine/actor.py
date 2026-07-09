@@ -14,12 +14,15 @@ import random
 
 import httpx
 
-from .auth_provider import AuthConfigError, _dig, make_provider
+from .auth_provider import AuthConfigError, _dig, _secret, make_provider
 
 
 class Actor:
     async def send(self, prompt: str) -> str:  # pragma: no cover - 인터페이스
         raise NotImplementedError
+
+    async def close(self):  # 정리 훅(브라우저 컨텍스트 등). 기본 no-op — 스캔 종료 시 호출.
+        return
 
 
 class HttpActor(Actor):
@@ -99,11 +102,15 @@ class HttpActor(Actor):
         async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
             for attempt in range(self.max_retries):
                 try:
-                    # 요청 직전 헤더 재조립 — 토큰이 갱신되면 반영(auth 없으면 그대로) + 세션 재주입
-                    headers = await self.auth.apply(self.headers) if self.auth else self.headers
+                    # 요청 직전 토큰 주입 — inject.in=header|query|body 지원(토큰 갱신 반영) + 세션 재주입
+                    if self.auth:
+                        headers, url, req_body = await self.auth.apply_request(
+                            self.headers, self.url, body, self.method)
+                    else:
+                        headers, url, req_body = self.headers, self.url, body
                     headers = self._inject_session(headers)
                     resp = await client.request(
-                        self.method, self.url, headers=headers, content=body.encode())
+                        self.method, url, headers=headers, content=req_body.encode())
                     # 401/403: 토큰 만료/무효 → 1회만 강제 재인증 후 재발사 (raise 이전에 가로채기)
                     if resp.status_code in (401, 403):
                         if self.auth and not reauthed:
@@ -148,9 +155,16 @@ class BrowserActor(Actor):
     """UI 자동화 액터 — API 없는 채팅 화면을 Playwright로 조종.
     promptfoo `browser.ts`(type→click→extract) / PyRIT `playwright_target.py` 패턴.
     config = {url, input_selector, submit_selector?, output_selector,
-              wait_ms?, headless?, max_retries?}
+              wait_ms?, headless?, max_retries?,
+              storage_state?, login?, reuse_page?}
+
+    인증/세션(HTTP와 다름 — 액터-인증-설계 §12):
+      - storage_state: 이미 로그인한 브라우저 쿠키/스토리지(JSON dict/파일경로) 주입 → 그 상태로 시작
+      - login: {url, user_selector, pass_selector, submit_selector?, username, password_env}
+      - 브라우저는 쿠키를 컨텍스트에 자동 보관 → **컨텍스트 재사용으로 멀티턴 세션 유지**(HTTP의 auth/session 필드 안 씀)
+      - reuse_page: true면 첫 턴만 goto(SPA 인페이지 멀티턴), 기본은 매 턴 로드(쿠키는 유지)
     ⚠️ 의존성: pip install playwright && playwright install chromium
-       (미설치 시 명확한 에러 반환 → 데모는 HttpActor로, 이건 구현만.)"""
+       (미설치 시 명확한 에러 반환 → 데모는 HttpActor로.)"""
 
     def __init__(self, config: dict):
         self.url = config["url"]
@@ -160,41 +174,89 @@ class BrowserActor(Actor):
         self.wait_ms = int(config.get("wait_ms", 8000))
         self.headless = bool(config.get("headless", True))
         self.max_retries = int(config.get("max_retries", 2))
+        self.storage_state = config.get("storage_state")   # dict(JSON) 또는 파일경로
+        self.login_cfg = config.get("login")               # 로그인 플로우(선택)
+        self.reuse_page = bool(config.get("reuse_page", False))
+        # 컨텍스트 재사용(멀티턴 쿠키 유지)용 상태 — lazy 기동
+        self._pw = self._browser = self._context = self._page = None
+        self._navigated = False
+
+    async def _ensure(self):
+        """최초 send에서 브라우저/컨텍스트/페이지 lazy 기동 + (있으면) 로그인. 이후 재사용."""
+        if self._page is not None:
+            return
+        from playwright.async_api import async_playwright
+        self._pw = await async_playwright().start()
+        self._browser = await self._pw.chromium.launch(headless=self.headless)
+        ctx_kw = {}
+        if self.storage_state:
+            ctx_kw["storage_state"] = self.storage_state   # 쿠키/스토리지 주입 = 로그인 상태로 시작
+        self._context = await self._browser.new_context(**ctx_kw)
+        self._page = await self._context.new_page()
+        if self.login_cfg:
+            await self._do_login()
+
+    async def _do_login(self):
+        """로그인 페이지에서 아이디/비번(env) 타이핑 → 제출. 쿠키는 컨텍스트에 자동 저장."""
+        lc = self.login_cfg
+        pw = _secret(lc, "password", "password_env")
+        await self._page.goto(lc["url"], wait_until="domcontentloaded")
+        await self._page.fill(lc["user_selector"], lc.get("username", ""))
+        await self._page.fill(lc["pass_selector"], pw)
+        if lc.get("submit_selector"):
+            await self._page.click(lc["submit_selector"])
+        else:
+            await self._page.press(lc["pass_selector"], "Enter")
+        await self._page.wait_for_timeout(1000)
 
     async def send(self, prompt: str) -> str:
         try:
-            from playwright.async_api import async_playwright
+            await self._ensure()
         except ImportError:
             return ("[ACTOR_ERROR] playwright 미설치 "
                     "(pip install playwright && playwright install chromium)")
+        except AuthConfigError as e:
+            return f"[ACTOR_ERROR] auth_config: {e}"
+        except Exception as e:  # noqa: BLE001 - 기동/로그인 실패 타입 다양
+            await self.close()
+            return f"[ACTOR_ERROR] browser_init {type(e).__name__}: {str(e)[:100]}"
+
         for attempt in range(self.max_retries):
             try:
-                async with async_playwright() as p:
-                    browser = await p.chromium.launch(headless=self.headless)
-                    try:
-                        page = await browser.new_page()
-                        await page.goto(self.url, wait_until="domcontentloaded")
-                        # 1) 입력창에 공격 프롬프트 타이핑
-                        await page.wait_for_selector(self.input_selector, timeout=self.wait_ms)
-                        await page.fill(self.input_selector, prompt)
-                        # 2) 전송 (전송 버튼 클릭 또는 Enter)
-                        if self.submit_selector:
-                            await page.click(self.submit_selector)
-                        else:
-                            await page.press(self.input_selector, "Enter")
-                        # 3) 응답 말풍선 대기 → 스트리밍 안정화 후 텍스트 추출
-                        await page.wait_for_selector(self.output_selector, timeout=self.wait_ms)
-                        await page.wait_for_timeout(500)
-                        text = await page.eval_on_selector(
-                            self.output_selector, "el => el.textContent")
-                        return (text or "").strip()[:4000]
-                    finally:
-                        await browser.close()
+                page = self._page
+                # reuse_page면 첫 턴만 goto(인페이지 멀티턴), 아니면 매 턴 로드(쿠키=세션은 유지)
+                if not (self.reuse_page and self._navigated):
+                    await page.goto(self.url, wait_until="domcontentloaded")
+                    self._navigated = True
+                # 1) 입력창에 공격 프롬프트 타이핑
+                await page.wait_for_selector(self.input_selector, timeout=self.wait_ms)
+                await page.fill(self.input_selector, prompt)
+                # 2) 전송 (전송 버튼 클릭 또는 Enter)
+                if self.submit_selector:
+                    await page.click(self.submit_selector)
+                else:
+                    await page.press(self.input_selector, "Enter")
+                # 3) 응답 말풍선 대기 → 스트리밍 안정화 후 텍스트 추출
+                await page.wait_for_selector(self.output_selector, timeout=self.wait_ms)
+                await page.wait_for_timeout(500)
+                text = await page.eval_on_selector(
+                    self.output_selector, "el => el.textContent")
+                return (text or "").strip()[:4000]
             except Exception as e:  # noqa: BLE001 - 브라우저 실패 타입 다양, 재시도 후 리턴
                 if attempt == self.max_retries - 1:
                     return f"[ACTOR_ERROR] {type(e).__name__}: {str(e)[:120]}"
                 await asyncio.sleep(1 + attempt)
         return "[ACTOR_ERROR] browser retries exhausted"
+
+    async def close(self):
+        """스캔 종료 시 정리(컨텍스트/브라우저/playwright). 재호출 안전."""
+        for obj, meth in ((self._context, "close"), (self._browser, "close"), (self._pw, "stop")):
+            try:
+                if obj is not None:
+                    await getattr(obj, meth)()
+            except Exception:  # noqa: BLE001 - 정리 실패는 무시
+                pass
+        self._pw = self._browser = self._context = self._page = None
 
 
 def make_actor(target) -> Actor:
