@@ -2,7 +2,18 @@
 """요청/응답 Pydantic 스키마. — API-명세.md 계약. 3.9 호환(Optional)."""
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class ScanCreate(BaseModel):
+    """POST /scans — 스캔 트리거. (§4)
+
+    target_id = 공격할 표적(등록된 프로젝트). config = 자유 JSON:
+    attack_types[]·population_size·max_generations·auth_context·safe_mode 등
+    (세부 검증·objectives 매핑은 후속 이슈. #36은 관통 뼈대).
+    """
+    target_id: int
+    config: dict = Field(default_factory=dict)
 
 
 class ActorSaveIn(BaseModel):
