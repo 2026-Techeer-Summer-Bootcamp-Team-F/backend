@@ -7,11 +7,14 @@ DB에서 순번(?after=)으로 복구. Celery 워커(진화)와 FastAPI(SSE)가 
 in-memory 큐 불가 → Redis pub/sub 필수(§3.3 역할③).
 """
 import json
+import logging
 
 import redis
 
 from ..config import settings
 from ..models import ScanEvent
+
+log = logging.getLogger(__name__)
 
 # 방송용 Redis 연결(발행 전용, 동기). 워커·API 어디서든 import해 씀.
 # 타임아웃: Redis 지연·네트워크 문제 시 동기 publish()가 오래 막히지 않게 상한.
@@ -44,6 +47,11 @@ def publish(scan_id: int, event_type: str, payload: dict,
         db.commit()
         db.refresh(ev)
         data["id"] = ev.scan_events_id       # 순번(SSE Last-Event-ID)
-    # ② publish: Redis 채널로 방송(구독 중인 SSE가 즉시 받음)
-    _redis.publish(channel(scan_id), json.dumps(data, ensure_ascii=False))
+    # ② publish: Redis 채널로 방송(구독 중인 SSE가 즉시 받음).
+    # 방송 실패는 치명적이지 않음 — 이미 ①에서 DB에 남았으니 SSE가 ?after=로 복구.
+    # 여기서 예외를 삼켜야 Redis 끊김이 진화루프를 중단시키지 않음(설계 §8-A).
+    try:
+        _redis.publish(channel(scan_id), json.dumps(data, ensure_ascii=False))
+    except redis.RedisError:
+        log.exception("Redis publish 실패(무시): scan_id=%s, event=%s", scan_id, event_type)
     return data

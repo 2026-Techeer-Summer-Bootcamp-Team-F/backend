@@ -18,9 +18,18 @@ def main():
     db = SessionLocal()
     tag = f"smoke-{os.getpid()}"
     # FK 체인: user → target → scan (scan_events가 scan_id FK라 실제 스캔 필요)
-    u = User(github_id=tag, github_login=tag); db.add(u); db.commit(); db.refresh(u)
-    t = TargetProject(user_id=u.user_id, project_name=tag); db.add(t); db.commit(); db.refresh(t)
-    s = Scan(target_id=t.target_id, status="running"); db.add(s); db.commit(); db.refresh(s)
+    u = User(github_id=tag, github_login=tag)
+    db.add(u)
+    db.commit()
+    db.refresh(u)
+    t = TargetProject(user_id=u.user_id, project_name=tag)
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    s = Scan(target_id=t.target_id, status="running")
+    db.add(s)
+    db.commit()
+    db.refresh(s)
     sid = s.scan_id
 
     # 구독자 스레드(방송 받는 쪽 = SSE 흉내)
@@ -55,7 +64,10 @@ def main():
     # 정리 (FK 순서: 자식 scan_events 먼저 삭제·커밋 → 부모 삭제)
     db.query(ScanEvent).filter_by(scan_id=sid).delete()
     db.commit()
-    db.delete(s); db.delete(t); db.delete(u); db.commit()
+    db.delete(s)
+    db.delete(t)
+    db.delete(u)
+    db.commit()
     return 0 if ok else 1
 
 
