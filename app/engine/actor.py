@@ -14,6 +14,8 @@ import random
 
 import httpx
 
+from .auth_provider import AuthConfigError, make_provider
+
 
 class Actor:
     async def send(self, prompt: str) -> str:  # pragma: no cover - 인터페이스
@@ -25,14 +27,17 @@ class HttpActor(Actor):
     config = {url, method, headers, body_template({{prompt}}), response_path,
               delay, max_retries}"""
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, cache_key: str = "", transport=None):
         self.url = config["url"]
+        self._transport = transport  # 테스트용 httpx MockTransport 주입 훅(운영은 None)
         self.method = config.get("method", "POST").upper()
         self.headers = config.get("headers", {"Content-Type": "application/json"})
         self.body_template = config.get("body_template", '{"message": "{{prompt}}"}')
         self.response_path = config.get("response_path", "reply")
         self.delay = float(config.get("delay", 0))
         self.max_retries = int(config.get("max_retries", 4))
+        # 인증: config.auth 있으면 TokenProvider 생성(없으면 None). cache_key로 스캔당 1회 발급 공유.
+        self.auth = make_provider(config.get("auth"), cache_key or self.url)
 
     def _build_body(self, prompt: str) -> str:
         # JSON 문자열 안전 삽입: prompt를 JSON 인코딩 후 바깥 따옴표 제거해 치환
@@ -53,11 +58,21 @@ class HttpActor(Actor):
         if self.delay:
             await asyncio.sleep(self.delay)
         body = self._build_body(prompt)
-        async with httpx.AsyncClient(timeout=30) as client:
+        reauthed = False  # 401 강제 재인증은 1회만(무한루프 금지)
+        async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
             for attempt in range(self.max_retries):
                 try:
+                    # 요청 직전 헤더 재조립 — 토큰이 갱신되면 반영(auth 없으면 그대로)
+                    headers = await self.auth.apply(self.headers) if self.auth else self.headers
                     resp = await client.request(
-                        self.method, self.url, headers=self.headers, content=body.encode())
+                        self.method, self.url, headers=headers, content=body.encode())
+                    # 401/403: 토큰 만료/무효 → 1회만 강제 재인증 후 재발사 (raise 이전에 가로채기)
+                    if resp.status_code in (401, 403):
+                        if self.auth and not reauthed:
+                            await self.auth.invalidate()
+                            reauthed = True
+                            continue
+                        return f"[ACTOR_ERROR] auth_denied ({resp.status_code})"
                     # 429/rate-limit: 서버 지정 대기 + 지터
                     if resp.status_code == 429 or resp.headers.get("x-ratelimit-remaining") == "0":
                         await asyncio.sleep(self._retry_after(resp, attempt))
@@ -71,6 +86,8 @@ class HttpActor(Actor):
                         return self._extract(resp.json())
                     except json.JSONDecodeError:
                         return resp.text[:2000]
+                except AuthConfigError as e:
+                    return f"[ACTOR_ERROR] auth_config: {e}"
                 except httpx.HTTPError as e:
                     if attempt == self.max_retries - 1:
                         return f"[ACTOR_ERROR] {type(e).__name__}"
@@ -147,7 +164,11 @@ def make_actor(target) -> Actor:
     config = target.config or {}
     actor_type = config.get("actor_type", "http")
     if actor_type == "http":
-        return HttpActor(config)
+        # cache_key = target_id + auth지문 → 액터가 objective마다 재생성돼도 토큰 캐시 공유(스캔당 1회 발급)
+        tid = getattr(target, "target_id", "x")
+        auth = config.get("auth") or {}
+        cache_key = f"{tid}:{auth.get('type', 'none')}:{auth.get('role', '')}"
+        return HttpActor(config, cache_key=cache_key)
     if actor_type == "browser":
         return BrowserActor(config)
     raise NotImplementedError(f"actor_type={actor_type} 미지원 (http|browser)")
