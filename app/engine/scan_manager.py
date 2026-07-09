@@ -1,0 +1,45 @@
+# -*- coding: utf-8 -*-
+"""스캔 실시간 이벤트 — persist-then-publish. — ARCHITECTURE.md §10, 계획 §5·§8-A
+
+원칙: SSE로 그냥 쏘면 놓친 이벤트는 사라짐 → ① scan_events(DB)에 먼저 저장(순번=id,
+유실복구 원본) → ② Redis 채널로 방송(실시간). 사용자는 실시간(Redis)으로 보되, 끊기면
+DB에서 순번(?after=)으로 복구. Celery 워커(진화)와 FastAPI(SSE)가 별 프로세스라
+in-memory 큐 불가 → Redis pub/sub 필수(§3.3 역할③).
+"""
+import json
+
+import redis
+
+from ..config import settings
+from ..models import ScanEvent
+
+# 방송용 Redis 연결(발행 전용, 동기). 워커·API 어디서든 import해 씀.
+_redis = redis.Redis.from_url(settings.redis_url)
+
+
+def channel(scan_id: int) -> str:
+    """스캔별 방송 채널 이름. FastAPI SSE가 여기를 구독한다."""
+    return f"channel:scan:{scan_id}"
+
+
+def publish(scan_id: int, event_type: str, payload: dict,
+            db=None, objective_id=None) -> dict:
+    """이벤트 1건: ① DB 저장(있으면) → ② Redis 방송. 저장된 payload(순번 id 포함) 반환.
+
+    - event_type: log|progress|attempt|finding|done (API-명세 §4)
+    - db 주면 scan_events에 영속화(유실복구 원본). None이면 방송만.
+    - objective_id 주면 payload에 함께(어느 목표 이벤트인지).
+    """
+    data = {"event": event_type, **payload}
+    if objective_id is not None:
+        data["objective_id"] = objective_id
+    # ① persist: DB에 먼저(순번=scan_events_id → SSE ?after= 유실복구 원본)
+    if db is not None:
+        ev = ScanEvent(scan_id=scan_id, payload=data)
+        db.add(ev)
+        db.commit()
+        db.refresh(ev)
+        data["id"] = ev.scan_events_id       # 순번(SSE Last-Event-ID)
+    # ② publish: Redis 채널로 방송(구독 중인 SSE가 즉시 받음)
+    _redis.publish(channel(scan_id), json.dumps(data, ensure_ascii=False))
+    return data
