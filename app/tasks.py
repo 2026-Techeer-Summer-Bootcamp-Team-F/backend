@@ -68,6 +68,7 @@ def run_scan(scan_id: int) -> dict:
         # 실패해도 상태를 failed로 남기고 이벤트 발행(사용자에게 보임).
         log.exception("[worker] run_scan 실패: scan_id=%s", scan_id)
         try:
+            db.rollback()          # commit 실패 시 세션이 롤백대기 → 재사용 전 정리(안 하면 PendingRollbackError)
             scan = db.get(Scan, scan_id)
             if scan is not None:
                 scan.status = "failed"

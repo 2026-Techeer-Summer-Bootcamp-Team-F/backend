@@ -51,10 +51,16 @@ def main():
             time.sleep(0.5)
         print("② 최종 status:", final)
 
-        # ③ scan_events 기록 확인(자체 세션으로 재조회)
-        db.expire_all()
-        evs = db.query(ScanEvent).filter_by(scan_id=scan_id).order_by(ScanEvent.scan_events_id).all()
-        types = [e.payload.get("event") for e in evs]
+        # ③ scan_events 기록 확인(자체 세션으로 재조회).
+        # status=done 커밋과 done 이벤트 저장은 두 커밋이라 사이 틈 존재 → 몇 번 재시도(레이스 제거).
+        types = []
+        for _ in range(10):
+            db.expire_all()
+            evs = db.query(ScanEvent).filter_by(scan_id=scan_id).order_by(ScanEvent.scan_events_id).all()
+            types = [e.payload.get("event") for e in evs]
+            if "done" in types:
+                break
+            time.sleep(0.3)
         print("③ scan_events:", types)
 
         ok = (final == "done" and "log" in types and "done" in types)

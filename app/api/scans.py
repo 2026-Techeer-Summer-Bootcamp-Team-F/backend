@@ -26,8 +26,10 @@ def _resolve_objective_atlas(db: Session, config: dict) -> list:
     wanted = config.get("attack_types") or []
     if not wanted:
         return []
-    # 존재하는 atlas id만 통과(중복 제거)
-    existing = set(db.scalars(sa_select(AtlasTechnique.id)).all())
+    # 존재하는 atlas id만 통과(중복 제거). 필터를 SQL로 밀어 전체 스캔 회피.
+    existing = set(db.scalars(
+        sa_select(AtlasTechnique.id).where(AtlasTechnique.id.in_(wanted))
+    ).all())
     return [a for a in dict.fromkeys(wanted) if a in existing]
 
 
