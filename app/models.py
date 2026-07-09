@@ -21,8 +21,10 @@ def _now():
 class User(Base):
     __tablename__ = "users"
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    github_id: Mapped[str] = mapped_column(String, unique=True, index=True)
-    github_login: Mapped[str] = mapped_column(String, default="")
+    github_id: Mapped[str] = mapped_column(String, unique=True, index=True)  # 불변 식별자
+    github_name: Mapped[str] = mapped_column(String, default="")             # GitHub username(표시)
+    name: Mapped[str] = mapped_column(String, default="")                    # 표시 이름
+    access_token_enc: Mapped[str] = mapped_column(String, default="")        # GitHub 토큰(리포조회용)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 

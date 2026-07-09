@@ -5,6 +5,12 @@ from typing import Optional
 from pydantic import BaseModel
 
 
+class DevLoginIn(BaseModel):
+    """POST /auth/dev-login — PoC 전용(AUTH_MODE=mock). GitHub 없이 토큰 발급."""
+    github_name: str
+    name: str = ""
+
+
 class ActorSaveIn(BaseModel):
     """POST /projects/{id}/actor — 액터 구성 저장.
 
