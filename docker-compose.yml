@@ -43,14 +43,23 @@ services:
       - ./:/app
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
-  # (확장) Celery 워커 — 진화엔진 별도 프로세스. celery app 배선 후 활성화.
-  # worker:
-  #   build: .
-  #   command: ["celery", "-A", "app.tasks", "worker", "--loglevel=info"]
-  #   environment:
-  #     DATABASE_URL: postgresql+psycopg://redteam:redteam@db:5432/redteam
-  #     REDIS_URL: redis://redis:6379/0
-  #   depends_on: [db, redis]
+  # Celery 워커 — 진화엔진(스캔)을 별도 프로세스에서 실행. FastAPI가 큐에 넣으면 여기가 꺼내 돎.
+  worker:
+    build: .
+    command: ["celery", "-A", "app.celery_app", "worker", "--loglevel=info"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://redteam:redteam@db:5432/redteam
+      REDIS_URL: redis://redis:6379/0
+      AUTH_MODE: ${AUTH_MODE:-mock}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    # 개발용: 호스트 코드 마운트 → 편집 즉시 반영(리빌드 불필요). (backend와 동일)
+    volumes:
+      - ./:/app
 
 volumes:
   pgdata:
