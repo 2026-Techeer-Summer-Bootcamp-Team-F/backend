@@ -28,7 +28,7 @@ def main():
     # 0) 표적 등록(더미앱 액터 config + 카나리)
     db = SessionLocal()
     tag = f"e2e-{os.getpid()}"   # 재실행 가능하게 unique(github_id는 unique 제약)
-    u = User(github_id=tag, github_login=tag); db.add(u); db.commit(); db.refresh(u)
+    u = User(github_id=tag, github_name=tag); db.add(u); db.commit(); db.refresh(u)
     cfg = {"actor_type": "http", "url": "http://backend:8000/dummy/acmebank/chat",
            "method": "POST", "body_template": '{"message": "{{prompt}}"}',
            "response_path": "reply", "canary": CANARY, "source_path": "app/api/dummy.py"}

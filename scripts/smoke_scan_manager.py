@@ -17,7 +17,7 @@ def main():
     db = SessionLocal()
     tag = f"smoke-{os.getpid()}"
     # FK 체인: user → target → scan (scan_events가 scan_id FK라 실제 스캔 필요)
-    u = User(github_id=tag, github_login=tag)
+    u = User(github_id=tag, github_name=tag)
     db.add(u)
     db.commit()
     db.refresh(u)

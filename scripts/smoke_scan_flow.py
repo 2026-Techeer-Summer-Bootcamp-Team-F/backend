@@ -21,7 +21,7 @@ def main():
     db = SessionLocal()
     tag = f"smoke-flow-{os.getpid()}"
     # 표적 FK 체인(user → target). 스캔은 API가 만든다.
-    u = User(github_id=tag, github_login=tag)
+    u = User(github_id=tag, github_name=tag)
     db.add(u)
     db.commit()
     db.refresh(u)
