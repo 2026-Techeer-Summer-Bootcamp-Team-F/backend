@@ -14,6 +14,7 @@ from sqlalchemy import select as sa_select
 
 from .celery_app import celery_app
 from .db import SessionLocal
+from .engine.orchestrator import run_evolution
 from .engine.scan_manager import publish
 from .models import AtlasTechnique, Objective, Scan, TargetProject
 from .recon import profile_target, profile_to_atlas
@@ -105,12 +106,22 @@ def run_scan(scan_id: int) -> dict:
         publish(scan_id, "progress",
                 {"phase": "start", "objectives": len(objectives)}, db=db)
 
+        # 표적 + 카나리(성공 판정 FLAG) — target.config 우선, 없으면 scan.config
+        target = db.get(TargetProject, scan.target_id)
+        canary = ((target.config or {}).get("canary")
+                  or (scan.config or {}).get("canary")) if target else None
+
         breached = 0
         for obj in objectives:
-            # TODO(#39): breached = run_evolution(db, scan, obj, target)
-            obj.status = "done"
-            db.commit()
-            publish(scan_id, "progress", {"phase": "objective_done"},
+            # 진화 루프(#39): retrieve→select→mutate→fire→judge→elitism. 뚫으면 Finding+breached.
+            try:
+                if run_evolution(db, scan_id, obj, target, canary):
+                    breached += 1
+            except Exception:
+                log.exception("[worker] objective 진화 실패(계속): objective_id=%s", obj.objective_id)
+                obj.status = "failed"
+                db.commit()
+            publish(scan_id, "progress", {"phase": "objective_done", "status": obj.status},
                     db=db, objective_id=obj.objective_id)
 
         # ── done ──

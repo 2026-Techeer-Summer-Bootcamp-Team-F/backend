@@ -1,32 +1,145 @@
 # -*- coding: utf-8 -*-
-"""진화 루프 메인. — ARCHITECTURE.md §4 (다이어그램)
+"""진화 루프 메인 (엔진 심장). — ARCHITECTURE.md §4, 기획 §5.4
 
-의사코드(오픈소스-분석.md §6.2):
-    population = retrieve(objective, k=K)          # 벡터 코퍼스에서 검증 씨앗
-    for gen in range(max_generations):
-        seed  = select(population)                  # UCB/MCTS bandit
-        child = mutate(seed, population)            # 5연산자(L0 DB검색 우선)
-        resp  = actor.fire(target, child)           # HttpActor(429 백오프)
-        score = judge(resp)                          # 3계층 판정
-        update(population, child, score)             # elitism
-        publish(scan_id, gen, score)                 # SSE
-        if score >= THRESHOLD: break                 # 성공
+retrieve → (0세대 씨앗 발사) → [select(UCB) → mutate → fire → judge → update(elitism)] → 종료.
+GPTFuzzer 뼈대 + AutoDAN elitism + UCB 씨앗선택(오픈소스-분석 §6.2). 변이는 결정론(AI 0원).
+종료조건(기획 §5.4): 성공(breach) / 예산(max_generations) / 정체(stagnation) / 전멸(extinct).
+
+동작 컨텍스트: Celery 워커(동기)에서 호출. 액터 send는 async(httpx) → asyncio.run으로 감싼다.
+스키마: 린 모델에 매핑 — Attempt.fitness=judge score, Attempt.breached=(verdict==breach).
 """
+import asyncio
+import json
 from dataclasses import dataclass
+
+from ..models import Attempt, Finding
+from .actor import make_actor
+from .judge import judge
+from .mutators import mutate, pick_op
+from .retrieve import retrieve_seeds
+from .scan_manager import publish
+from .select import Node, select
+
+ELITISM_ALPHA = 4        # 상위 α개 무변형 생존(AutoDAN)
+STAGNATION_LIMIT = 2     # 개선 없는 세대 연속 한계 → 조기 종료
 
 
 @dataclass
 class EvolveConfig:
     population_size: int = 8
-    max_generations: int = 5
-    success_threshold: float = 0.9
+    max_generations: int = 6
 
 
-def run_evolution(scan_id: int, objective, target, cfg: EvolveConfig = EvolveConfig()):
-    """진화 루프 실행. TODO: 아래 단계 배선.
-    - retrieve.retrieve_seeds(objective) → population
-    - 루프: select → mutate → actor.fire → judge → update → publish
-    - 종료: 성공/예산/정체/전멸/시간
-    - 결과: Finding 저장 + Redis 상태 업데이트
+def _fire(actor, prompt: str) -> str:
+    """async 액터 send를 동기 워커에서 실행(발사 1회 = 독립 이벤트루프)."""
+    return asyncio.run(actor.send(prompt))
+
+
+def run_evolution(db, scan_id: int, objective, target, canary,
+                  cfg: EvolveConfig = EvolveConfig()) -> bool:
+    """objective 1개에 대한 진화 루프. 뚫으면 True(+Finding 기록), 아니면 False.
+
+    - canary: 성공 판정용 FLAG 문자열(target/scan config에서 옴). judge에 전달.
+    - 모든 시도는 Attempt로 기록되고 scan_events(폴링 SSE)로 중계된다.
     """
-    raise NotImplementedError("진화 루프 구현 — 엔진 첫 삽")
+    actor = make_actor(target)
+    atlas_id = objective.atlas_technique_id
+
+    def _record_attempt(prompt, resp, v, generation, parent_id, op):
+        at = Attempt(
+            objective_id=objective.objective_id, parent_id=parent_id,
+            prompt_text=prompt, response_text=resp, fitness=v["score"],
+            generation=generation, mutation_op=op or "",
+            breached=(v["verdict"] == "breach"))
+        db.add(at)
+        db.commit()
+        db.refresh(at)
+        publish(scan_id, "attempt", {
+            "attempt_id": at.attempt_id, "generation": generation,
+            "parent_id": parent_id, "verdict": v["verdict"], "score": v["score"],
+            "mutation_op": op or "seed", "atlas": atlas_id,
+            "prompt": prompt[:200]}, db=db, objective_id=objective.objective_id)
+        return at
+
+    def _record_finding(at, v):
+        evidence = json.dumps({
+            "prompt": at.prompt_text, "response": at.response_text,
+            "canary_hit": v.get("canary_hit"), "stage": v.get("stage")},
+            ensure_ascii=False)
+        db.add(Finding(
+            attempt_id=at.attempt_id,
+            severity="critical" if v.get("canary_hit") else "high",
+            evidence=evidence,
+            mitigation="입력 검증·시스템프롬프트 격리·출력 필터로 카나리 유출 차단"))
+        objective.status = "breached"
+        db.commit()
+        publish(scan_id, "finding", {
+            "attempt_id": at.attempt_id, "atlas": atlas_id,
+            "severity": "critical" if v.get("canary_hit") else "high",
+            "canary_hit": v.get("canary_hit")},
+            db=db, objective_id=objective.objective_id)
+
+    # ── 0세대: 씨앗 그대로 발사 (LLM 안 씀 = 쌈) ──
+    seeds = retrieve_seeds(db, atlas_id=atlas_id, k=cfg.population_size)
+    population: list = []
+    best = 0.0
+    for seed in seeds:
+        resp = _fire(actor, seed.prompt_text)
+        v = judge(resp, canary)
+        at = _record_attempt(seed.prompt_text, resp, v, 0, None, None)
+        best = max(best, v["score"])
+        if v["verdict"] == "breach":
+            _record_finding(at, v)
+            return True
+        population.append(Node(at.attempt_id, seed.prompt_text, v["score"]))
+
+    # ── 진화 세대: select(UCB) → mutate → fire → judge → elitism ──
+    stagnation = 0
+    step = 0
+    for gen in range(1, cfg.max_generations + 1):
+        publish(scan_id, "progress", {
+            "phase": "evolve", "generation": gen, "best_score": round(best, 3),
+            "population": len(population)}, db=db, objective_id=objective.objective_id)
+        if not population:
+            objective.status = "exhausted"
+            db.commit()
+            return False
+
+        step += 1
+        parent = select(population, step)
+        op = pick_op()
+        child, _improvement = mutate(parent.prompt, op, [n.prompt for n in population])
+        resp = _fire(actor, child)
+        v = judge(resp, canary)
+        at = _record_attempt(child, resp, v, gen, parent.attempt_id, op)
+
+        # UCB 역전파(부모가 좋은 자식을 냈으면 보상↑)
+        parent.visits += 1
+        parent.reward += v["score"]
+
+        if v["verdict"] == "breach":
+            _record_finding(at, v)
+            return True
+
+        # add_if_improved + elitism (상위 α 생존)
+        if not population or v["score"] >= min(n.score for n in population):
+            population.append(Node(at.attempt_id, child, v["score"]))
+            population.sort(key=lambda n: n.score, reverse=True)
+            del population[ELITISM_ALPHA:]
+
+        if v["score"] > best + 1e-6:
+            best = v["score"]
+            stagnation = 0
+        else:
+            stagnation += 1
+        db.commit()
+
+        if stagnation >= STAGNATION_LIMIT and gen >= 2:
+            objective.status = "safe"
+            db.commit()
+            return False
+
+    if objective.status == "pending" or objective.status == "running":
+        objective.status = "safe"
+        db.commit()
+    return False
