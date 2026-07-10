@@ -11,12 +11,16 @@ python-multipart>=0.0.9
 # DB 드라이버 (docker/postgres). 로컬 sqlite 단독이면 불필요.
 psycopg[binary]>=3.1
 
-# 비동기 워커 + Redis (ARCHITECTURE §1: Celery + Redis 5역할). 스캔=Celery 태스크로 실행.
+# 비동기 워커. 스캔=Celery 태스크. 브로커=RabbitMQ(amqp, kombu 내장이라 별도 dep 불필요),
+# result backend=Redis. (2026-07-10: 브로커 Redis→RabbitMQ 분리, Redis는 3역할)
 celery>=5.3
-redis>=5.0
+redis>=5.0                 # Celery result backend · rate-limit 카운터 · 캐시
 
 # 판정 폴백(judge Tier3)·리포트 AI 요약용 Claude Haiku. — 계획 §4-4·§7
 anthropic>=0.40
+
+# 관측성: FastAPI /metrics 노출(Prometheus 스크레이프). — ARCHITECTURE.md §3.11
+prometheus-fastapi-instrumentator>=7.0
 
 # (옵션) 임베딩 — 별도 파이프라인(embed.py)은 fastembed 사용. 앱 런타임은 검색만.
 # (옵션) BrowserActor: pip install playwright && playwright install chromium

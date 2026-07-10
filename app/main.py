@@ -25,6 +25,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 관측성: Prometheus가 스크레이프할 /metrics 노출(설치돼 있을 때만). — ARCHITECTURE.md §3.11
+try:
+    from prometheus_fastapi_instrumentator import Instrumentator
+    Instrumentator().instrument(app).expose(app)
+except ImportError:  # 로컬 최소구성(미설치)에서도 앱은 정상 부팅
+    pass
+
 # ── 라우터 마운트 (API-명세.md 섹션과 1:1) ──
 app.include_router(auth.router)        # §1 Auth
 app.include_router(projects.router)    # §2·§3 GitHub Repos + Projects

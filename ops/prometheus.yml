@@ -1,0 +1,13 @@
+# Prometheus 스크레이프 설정 — backend FastAPI /metrics 수집. ARCHITECTURE.md §3.11
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:8000"]

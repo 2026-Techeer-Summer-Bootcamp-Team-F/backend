@@ -31,7 +31,10 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     attacker_model: str = "claude-haiku-4-5-20251001"
 
-    # ── Redis (확장: Celery 브로커·SSE·rate-limit·캐시) ──
+    # ── RabbitMQ (Celery 메시지 브로커 — 태스크 배달) — 2026-07-10 브로커 분리 ──
+    rabbitmq_url: str = "amqp://guest:guest@localhost:5672//"
+
+    # ── Redis (3역할: 캐시(벡터검색 결과)·rate-limit·Celery result backend) ──
     redis_url: str = "redis://localhost:6379/0"
 
 
