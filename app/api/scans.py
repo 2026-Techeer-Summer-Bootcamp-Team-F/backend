@@ -4,12 +4,17 @@
 POST /scans 는 Scan 생성 + objectives 저장 + tasks.run_scan 을 Celery 로 던지고
 즉시 202 반환(사용자 안 기다림). 실제 진화는 워커(별 프로세스)가 수행. — 계획 §1
 """
+import asyncio
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select as sa_select
 from sqlalchemy.orm import Session
 
-from ..db import get_db
-from ..models import AtlasTechnique, Objective, Scan, TargetProject
+from ..db import SessionLocal, get_db
+from ..models import AtlasTechnique, Objective, Scan, ScanEvent, TargetProject
+from ..recon import attack_types_to_atlas
 from ..schemas import ScanCreate
 from ..tasks import run_scan
 
@@ -17,20 +22,19 @@ router = APIRouter(prefix="/scans", tags=["scans"])
 
 
 def _resolve_objective_atlas(db: Session, config: dict) -> list:
-    """요청 attack_types → objectives(atlas 기법 id) 변환.
+    """요청 attack_types(문자열) → objectives(atlas 기법 id) 변환.
 
-    #36(관통 뼈대)에선 "이미 atlas 마스터에 존재하는 id"만 objective로 만든다
-    (FK 위반 방지). 정찰 프로파일→공격유형 정식 매핑표는 #37에서 engine/attack_types.py로.
-    보통 로컬 atlas 테이블이 비어 있으면 0개 → '빈 목표라도 관통'(이슈 완료기준).
+    recon.attack_types_to_atlas로 매핑(§2-B-1) 후, DB에 실제 존재하는 atlas만 통과
+    (FK 위반 방지). 정찰 기반 추가 목표는 워커(#37)가 스캔 중에 더한다.
     """
-    wanted = config.get("attack_types") or []
+    wanted = attack_types_to_atlas(config.get("attack_types"))
     if not wanted:
         return []
-    # 존재하는 atlas id만 통과(중복 제거). 필터를 SQL로 밀어 전체 스캔 회피.
+    # 존재하는 atlas id만 통과. 필터를 SQL로 밀어 전체 스캔 회피.
     existing = set(db.scalars(
         sa_select(AtlasTechnique.id).where(AtlasTechnique.id.in_(wanted))
     ).all())
-    return [a for a in dict.fromkeys(wanted) if a in existing]
+    return [a for a in wanted if a in existing]
 
 
 @router.post("", status_code=202)
@@ -86,7 +90,55 @@ def get_scan(scan_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{scan_id}/events")
-def scan_events(scan_id: int, after: int = 0):
-    """SSE — Redis pub/sub 구독해 진행상황 스트림(id=scan_events_id, ?after= 유실복구).
-    ARCHITECTURE.md §10. TODO(#41): StreamingResponse(text/event-stream)."""
-    return {"todo": "SSE stream", "after": after}
+async def scan_events(scan_id: int, after: int = 0):
+    """SSE(#41) — scan_events(DB)를 폴링해 진행상황 스트림. (2026-07-10: Redis pub/sub→DB폴링)
+
+    - 각 이벤트 `id=scan_events_id` → 클라가 끊기면 `?after=<마지막 id>`로 이어받기(Last-Event-ID).
+    - 워커가 scan_events에 저장하면 여기서 1초 주기로 `id>after` 조회해 흘려보냄.
+    - `event==done` 이벤트를 보내면 스트림 종료. 스캔이 이미 done/failed면 곧장 종료.
+    - 무이벤트가 MAX_IDLE(초) 지속되면 스트림 종료(연결 누수 방지).
+    """
+    MAX_IDLE = 300  # 새 이벤트 없이 5분(=300×1s) 지나면 스트림 닫음
+
+    # 연결 시 스캔 존재 확인(없으면 404) — 없는 스캔을 5분간 폴링하며 매달리지 않도록
+    with SessionLocal() as db0:
+        if db0.get(Scan, scan_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "스캔 없음")
+
+    def _poll(after_id: int):
+        # 동기 DB 조회(이벤트 목록 + 종료여부). asyncio.to_thread로 실행해 이벤트루프를 막지 않음.
+        with SessionLocal() as db:
+            rows = db.scalars(
+                sa_select(ScanEvent)
+                .where(ScanEvent.scan_id == scan_id, ScanEvent.scan_events_id > after_id)
+                .order_by(ScanEvent.scan_events_id)
+            ).all()
+            events = [(r.scan_events_id, r.payload) for r in rows]
+            terminal = False
+            if not events:
+                scan = db.get(Scan, scan_id)
+                terminal = scan is not None and scan.status in ("done", "failed")
+            return events, terminal
+
+    async def event_stream():
+        last = after
+        idle = 0
+        while True:
+            events, terminal = await asyncio.to_thread(_poll, last)
+            if events:
+                idle = 0
+                for eid, payload in events:
+                    last = eid
+                    yield f"id: {eid}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    if isinstance(payload, dict) and payload.get("event") == "done":
+                        return
+            else:
+                if terminal:           # 스캔 끝났고 남은 이벤트 없음 → 종료(없는 done 대기 방지)
+                    return
+                idle += 1
+                if idle >= MAX_IDLE:
+                    return
+                yield ": keep-alive\n\n"   # 프록시 타임아웃 방지용 주석 프레임
+            await asyncio.sleep(1)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
