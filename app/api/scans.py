@@ -7,7 +7,7 @@ POST /scans 는 Scan 생성 + objectives 저장 + tasks.run_scan 을 Celery 로 
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select as sa_select
 from sqlalchemy.orm import Session
@@ -90,15 +90,21 @@ def get_scan(scan_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{scan_id}/events")
-async def scan_events(scan_id: int, after: int = 0):
+async def scan_events(scan_id: int, request: Request, after: int = 0):
     """SSE(#41) — scan_events(DB)를 폴링해 진행상황 스트림. (2026-07-10: Redis pub/sub→DB폴링)
 
-    - 각 이벤트 `id=scan_events_id` → 클라가 끊기면 `?after=<마지막 id>`로 이어받기(Last-Event-ID).
+    - 각 이벤트 `id=scan_events_id` → 클라가 끊기면 이어받기. 브라우저 EventSource는 자동
+      재접속 때 `Last-Event-ID` 헤더로 마지막 id를 보내므로 이를 `?after=`보다 우선한다.
     - 워커가 scan_events에 저장하면 여기서 1초 주기로 `id>after` 조회해 흘려보냄.
     - `event==done` 이벤트를 보내면 스트림 종료. 스캔이 이미 done/failed면 곧장 종료.
     - 무이벤트가 MAX_IDLE(초) 지속되면 스트림 종료(연결 누수 방지).
     """
     MAX_IDLE = 300  # 새 이벤트 없이 5분(=300×1s) 지나면 스트림 닫음
+
+    # 브라우저 EventSource 자동 재접속 시 보내는 Last-Event-ID 헤더를 ?after=보다 우선
+    lei = request.headers.get("Last-Event-ID")
+    if lei and lei.isdigit():
+        after = int(lei)
 
     # 연결 시 스캔 존재 확인(없으면 404). 동기 DB 조회는 to_thread로 빼 이벤트루프를 막지 않음.
     def _exists():
