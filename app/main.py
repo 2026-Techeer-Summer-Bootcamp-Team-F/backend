@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import models  # noqa: F401 — ORM 모델을 Base.metadata 에 등록(create_all 전 필수)
-from .api import auth, dummy, projects, results, scans
+from .api import auth, dummy, projects, reference, results, scans
 from .config import settings
 from .db import Base, engine
 
@@ -35,8 +35,9 @@ except ImportError:  # 로컬 최소구성(미설치)에서도 앱은 정상 부
 # ── 라우터 마운트 (API-명세.md 섹션과 1:1) ──
 app.include_router(auth.router)        # §1 Auth
 app.include_router(projects.router)    # §2·§3 GitHub Repos + Projects
-app.include_router(scans.router)       # §4 Scans (+ SSE)
+app.include_router(scans.router)       # §4 Scans (+ SSE + cancel)
 app.include_router(results.router)     # §5 Report/Heatmap/Findings
+app.include_router(reference.router)   # §3-1·§5·§6 attack-types/atlas/tree/attempts
 app.include_router(dummy.router)        # (PoC) 취약 더미앱 = self-testing 표적. 운영 배포 시 제외
 
 
