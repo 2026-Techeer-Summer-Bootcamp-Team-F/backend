@@ -24,6 +24,7 @@ class ActorSaveIn(BaseModel):
 
 
 class ProjectOut(BaseModel):
+    """프로젝트 응답 스키마 — 액터 config와 전용 컬럼을 노출."""
     target_id: int
     project_name: str
     actor_type: str        # config.actor_type 를 꺼내 노출(편의)

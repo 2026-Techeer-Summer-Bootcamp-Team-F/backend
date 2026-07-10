@@ -24,7 +24,7 @@ def get_current_user(cred: HTTPAuthorizationCredentials = Depends(bearer_scheme)
     try:
         payload = decode_access_token(cred.credentials)
     except jwt.PyJWTError:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "토큰 무효 또는 만료")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "토큰 무효 또는 만료") from None
     sub = payload.get("sub")
     user = db.get(User, int(sub)) if sub else None
     if user is None:

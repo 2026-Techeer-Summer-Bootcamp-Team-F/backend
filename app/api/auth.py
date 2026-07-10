@@ -3,7 +3,7 @@
 
 흐름(SPA 주도형, 결정 2026-07-09):
   ① login    → 200 {authorize_url}   (프론트가 이 URL로 이동)
-  ② GitHub   → redirect_uri(?code&state)  (프론트 콜백 또는 이 콜백)
+  ② GitHub   → redirect_uri(?code&state)
   ③ callback(code,state) → 토큰교환 → GitHub /user → users upsert → JWT
                → 200 {access_token, token_type, user}
   ④ logout   → 204 무상태(서버 blacklist 없음; 클라가 토큰 삭제 + 짧은 만료)
@@ -30,16 +30,19 @@ GITHUB_USER = "https://api.github.com/user"
 
 
 def _user_public(u: User) -> dict:
+    """응답에 노출할 최소 사용자 정보(user_id·github_name·name)."""
     return {"user_id": u.user_id, "github_name": u.github_name, "name": u.name}
 
 
 def _issue(u: User) -> dict:
+    """사용자에게 줄 JWT 액세스 토큰 응답 페이로드 생성."""
     return {"access_token": create_access_token(u.user_id),
             "token_type": "bearer", "user": _user_public(u)}
 
 
 def _upsert(db: Session, github_id: str, github_name: str,
             name: str, token_enc: str = "") -> User:
+    """github_id 기준 사용자 upsert(없으면 생성). 토큰이 있으면 함께 갱신."""
     user = db.query(User).filter(User.github_id == github_id).first()
     if user is None:
         user = User(github_id=github_id)
@@ -75,27 +78,42 @@ def github_callback(code: str, state: str = "", db: Session = Depends(get_db)):
     if not (settings.github_client_id and settings.github_client_secret):
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "GitHub OAuth 자격증명 미설정")
     with httpx.Client(timeout=10) as client:
-        tok_resp = client.post(
-            GITHUB_TOKEN,
-            headers={"Accept": "application/json"},
-            data={"client_id": settings.github_client_id,
-                  "client_secret": settings.github_client_secret,
-                  "code": code,
-                  "redirect_uri": settings.github_redirect_uri},
-        )
-        tok = tok_resp.json()
+        try:
+            tok_resp = client.post(
+                GITHUB_TOKEN,
+                headers={"Accept": "application/json"},
+                data={"client_id": settings.github_client_id,
+                      "client_secret": settings.github_client_secret,
+                      "code": code,
+                      "redirect_uri": settings.github_redirect_uri},
+            )
+        except httpx.RequestError:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "GitHub 토큰 교환 요청 실패") from None
+        if tok_resp.status_code != 200:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY,
+                                f"GitHub 토큰 교환 응답 오류(status={tok_resp.status_code})")
+        try:
+            tok = tok_resp.json()
+        except ValueError:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "GitHub 토큰 응답 파싱 실패") from None
         access_token = tok.get("access_token")
         if not access_token:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED,
-                                f"토큰 교환 실패: {tok.get('error_description') or tok.get('error') or 'unknown'}")
-        u_resp = client.get(
-            GITHUB_USER,
-            headers={"Authorization": f"Bearer {access_token}",
-                     "Accept": "application/vnd.github+json"},
-        )
+            err = tok.get("error_description") or tok.get("error") or "unknown"
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"토큰 교환 실패: {err}")
+        try:
+            u_resp = client.get(
+                GITHUB_USER,
+                headers={"Authorization": f"Bearer {access_token}",
+                         "Accept": "application/vnd.github+json"},
+            )
+        except httpx.RequestError:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "GitHub 사용자 조회 요청 실패") from None
         if u_resp.status_code != 200:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "GitHub 사용자 조회 실패")
-        gh = u_resp.json()
+        try:
+            gh = u_resp.json()
+        except ValueError:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "GitHub 사용자 응답 파싱 실패") from None
 
     user = _upsert(db, github_id=str(gh["id"]),
                    github_name=gh.get("login") or "",
@@ -117,12 +135,12 @@ def dev_login(body: DevLoginIn, db: Session = Depends(get_db)):
 
 @router.get("/me")
 def me(user: User = Depends(get_current_user)):
-    """현재 로그인 사용자."""
+    """현재 로그인 사용자 정보."""
     return {"user_id": user.user_id, "github_id": user.github_id,
             "github_name": user.github_name, "name": user.name}
 
 
 @router.post("/logout", status_code=204)
-def logout(user: User = Depends(get_current_user)):
+def logout(_user: User = Depends(get_current_user)):
     """무상태 로그아웃 — 서버 상태 없음(클라가 토큰 삭제). 204 No Content."""
     return None
