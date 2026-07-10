@@ -23,7 +23,7 @@ DUMMY = "app/api/dummy.py"   # 컨테이너 cwd=/app 기준. 임시 검증 대�
 def main():
     db = SessionLocal()
     tag = f"smoke-recon-{os.getpid()}"
-    u = User(github_id=tag, github_login=tag)
+    u = User(github_id=tag, github_name=tag)
     db.add(u)
     db.commit()
     db.refresh(u)
