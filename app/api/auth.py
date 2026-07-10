@@ -115,7 +115,10 @@ def github_callback(code: str, state: str = "", db: Session = Depends(get_db)):
         except ValueError:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, "GitHub 사용자 응답 파싱 실패") from None
 
-    user = _upsert(db, github_id=str(gh["id"]),
+    gh_id = gh.get("id")
+    if gh_id is None:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "GitHub 사용자 응답에 id 없음")
+    user = _upsert(db, github_id=str(gh_id),
                    github_name=gh.get("login") or "",
                    name=gh.get("name") or "",
                    token_enc=encrypt_token(access_token))
