@@ -4,6 +4,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """앱 환경설정 값(.env·환경변수에서 로드). 비밀은 .env에만 두고 커밋 금지."""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # ── 인증 ──
@@ -19,7 +21,11 @@ class Settings(BaseSettings):
     github_client_id: str = ""
     github_client_secret: str = ""
     github_redirect_uri: str = "http://localhost:8000/auth/github/callback"
+    github_scope: str = "read:user repo"    # repos(비공개 포함) 조회 위해 repo 스코프
     frontend_url: str = "http://localhost:5173"
+
+    # ── GitHub 토큰 저장 암호화(옵션) ──
+    token_enc_key: str = ""                 # 있으면 Fernet 암호화, 없으면 평문(PoC)
 
     # ── 공격자 LLM (변이/판정 폴백; 비우면 결정론적 변이만) ──
     anthropic_api_key: str = ""

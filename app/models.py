@@ -4,25 +4,31 @@
 ⚠️ 컬럼 세부는 ERD-완전정리.md 최종본과 대조해 확정할 것(여긴 뼈대).
 표적=projects(target_projects), 스캔결과 체인: scan → objective → attempt → finding.
 공격 코퍼스(attack_cases)·ATLAS 마스터(atlas_techniques)는 corpus_ingest/atlas_ingest 산출물.
+⚠️ PoC는 main.py의 create_all로 테이블 생성 → 스키마 변경 시 기존 DB 재생성 필요
+   (운영은 Alembic 마이그레이션으로 교체).
 """
 from datetime import datetime, timezone
 
 from sqlalchemy import (JSON, Boolean, DateTime, ForeignKey, Integer, String,
                         Text)
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
 
 
 def _now():
+    """레코드 생성 시각 기본값(UTC aware)."""
     return datetime.now(timezone.utc)
 
 
 class User(Base):
+    """로그인 사용자(GitHub OAuth). github_id=불변 식별자, 토큰은 리포 조회용."""
     __tablename__ = "users"
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    github_id: Mapped[str] = mapped_column(String, unique=True, index=True)
-    github_login: Mapped[str] = mapped_column(String, default="")
+    github_id: Mapped[str] = mapped_column(String, unique=True, index=True)  # 불변 식별자
+    github_name: Mapped[str] = mapped_column(String, default="")             # GitHub username(표시)
+    name: Mapped[str] = mapped_column(String, default="")                    # 표시 이름
+    access_token_enc: Mapped[str] = mapped_column(String, default="")        # GitHub 토큰(리포조회용)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
@@ -46,6 +52,7 @@ class TargetProject(Base):
 
 
 class Scan(Base):
+    """앱 하나를 1회 공격하는 스캔 실행 단위(진행상태·config·progress)."""
     __tablename__ = "scans"
     scan_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     target_id: Mapped[int] = mapped_column(ForeignKey("target_projects.target_id"), index=True)
@@ -114,8 +121,8 @@ class ScanReport(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
-# ── 공격 코퍼스 (corpus_ingest.py 산출물 = 씨앗 검색 대상) ──
 class AttackCase(Base):
+    """공격 코퍼스(씨앗). corpus_ingest.py 산출물 = 진화 씨앗 검색 대상."""
     __tablename__ = "attack_cases"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     prompt_text: Mapped[str] = mapped_column(Text)

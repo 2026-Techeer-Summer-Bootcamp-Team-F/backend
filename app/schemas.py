@@ -16,6 +16,12 @@ class ScanCreate(BaseModel):
     config: dict = Field(default_factory=dict)
 
 
+class DevLoginIn(BaseModel):
+    """POST /auth/dev-login — PoC 전용(AUTH_MODE=mock). GitHub 없이 토큰 발급."""
+    github_name: str
+    name: str = ""
+
+
 class ActorSaveIn(BaseModel):
     """POST /projects/{id}/actor — 액터 구성 저장.
 
@@ -29,6 +35,7 @@ class ActorSaveIn(BaseModel):
 
 
 class ProjectOut(BaseModel):
+    """프로젝트 응답 스키마 — 액터 config와 전용 컬럼을 노출."""
     target_id: int
     project_name: str
     actor_type: str        # config.actor_type 를 꺼내 노출(편의)

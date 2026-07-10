@@ -4,6 +4,7 @@
 `POST /projects/{id}/actor`(액터 구성 저장)는 엔진(사용자) 스코프 — 스캔이 읽을
 config 스키마를 정의하는 쪽이라 여기서 구현. 소유권 검증은 get_current_user(팀원 auth) 의존.
 """
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -11,22 +12,69 @@ from ..db import get_db
 from ..deps import get_current_user
 from ..models import TargetProject, User
 from ..schemas import ActorSaveIn
+from ..security import decrypt_token
 
 router = APIRouter(tags=["projects"])
 
 _VALID_ACTOR_TYPES = {"http", "browser"}
 
+# dev-login 사용자(실 GitHub 토큰 없음)용 픽스처 — Swagger/화면 테스트가 비지 않게.
+_FIXTURE_REPOS = [
+    {"full_name": "demo-user/bank-bot",
+     "html_url": "https://github.com/demo-user/bank-bot",
+     "description": "고객지원 챗봇(데모)", "private": False,
+     "updated_at": "2026-07-01T09:00:00Z"},
+    {"full_name": "demo-user/rag-assistant",
+     "html_url": "https://github.com/demo-user/rag-assistant",
+     "description": "사내 문서 RAG 어시스턴트(데모)", "private": True,
+     "updated_at": "2026-06-20T12:00:00Z"},
+]
+
 
 def _project_out(t: TargetProject) -> dict:
+    """TargetProject → API 응답 dict(액터 config·전용 컬럼 노출)."""
     return {"target_id": t.target_id, "project_name": t.project_name,
             "actor_type": (t.config or {}).get("actor_type", ""),
             "config": t.config or {}, "system_prompt": t.system_prompt, "model": t.model}
 
 
 @router.get("/github/repos")
-def github_repos():
-    """로그인 사용자 GitHub 레포 목록(Import 화면용). TODO: GitHub API 호출"""
-    return []
+def github_repos(q: str = "", page: int = 1,
+                 user: User = Depends(get_current_user)):
+    """로그인 사용자 GitHub 레포 목록(Vercel식 Import 화면용). 응답 {data:[...]}.
+
+    저장된 access_token 으로 GitHub /user/repos 호출. dev-login 사용자(토큰 없음)는
+    픽스처 목록을 돌려줘 Swagger/화면 테스트가 가능하게 한다. q=이름·설명 필터, page=페이지.
+    """
+    token = decrypt_token(user.access_token_enc)
+    if not token:
+        data = list(_FIXTURE_REPOS)
+    else:
+        try:
+            with httpx.Client(timeout=10) as client:
+                resp = client.get(
+                    "https://api.github.com/user/repos",
+                    headers={"Authorization": f"Bearer {token}",
+                             "Accept": "application/vnd.github+json"},
+                    params={"per_page": 30, "page": page, "sort": "updated"},
+                )
+        except httpx.RequestError:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "GitHub 레포 조회 요청 실패") from None
+        if resp.status_code != 200:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "GitHub 레포 조회 실패")
+        try:
+            repos = resp.json()
+        except ValueError:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "GitHub 레포 응답 파싱 실패") from None
+        data = [{"full_name": r["full_name"], "html_url": r["html_url"],
+                 "description": r.get("description"), "private": r["private"],
+                 "updated_at": r.get("updated_at")} for r in repos]
+    if q:
+        ql = q.lower()
+        data = [r for r in data
+                if ql in (r["full_name"] or "").lower()
+                or ql in (r.get("description") or "").lower()]
+    return {"data": data}
 
 
 @router.post("/projects", status_code=201)
@@ -43,6 +91,7 @@ def list_projects():
 
 @router.get("/projects/{target_id}")
 def get_project(target_id: int):
+    """프로젝트 단건 조회. TODO"""
     return {"target_id": target_id}
 
 
@@ -83,7 +132,8 @@ def save_actor(target_id: int, body: ActorSaveIn,
     if actor_type == "browser":
         for req in ("input_selector", "output_selector"):
             if not cfg.get(req):
-                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"browser: config.{req} 필수")
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                    f"browser: config.{req} 필수")
 
     target.config = cfg                                   # 액터 설정 저장(JSON)
     if body.system_prompt is not None:                    # 전용 컬럼
