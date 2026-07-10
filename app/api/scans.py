@@ -89,6 +89,22 @@ def get_scan(scan_id: int, db: Session = Depends(get_db)):
     }
 
 
+@router.post("/{scan_id}/cancel")
+def cancel_scan(scan_id: int, db: Session = Depends(get_db)):
+    """스캔 취소 — status=cancelled로 표시. 워커(run_scan)가 목표 사이에서 감지해 중단. — §4"""
+    scan = db.get(Scan, scan_id)
+    if scan is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "스캔 없음")
+    if scan.status in ("done", "failed", "cancelled"):
+        return {"scan_id": scan_id, "status": scan.status, "stop_reason": "already_terminal"}
+    scan.status = "cancelled"
+    db.commit()
+    # SSE로도 알림(폴링 중인 프론트가 즉시 종료 감지)
+    from ..engine.scan_manager import publish
+    publish(scan_id, "done", {"status": "cancelled", "stop_reason": "cancelled"}, db=db)
+    return {"scan_id": scan_id, "status": "cancelled", "stop_reason": "cancelled"}
+
+
 @router.get("/{scan_id}/stream")
 async def scan_stream(scan_id: int, request: Request, after: int = 0):
     """SSE(#41) — scan_events(DB)를 폴링해 진행상황 스트림. (API-명세 §5 `/scans/{id}/stream`)

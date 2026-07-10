@@ -113,6 +113,11 @@ def run_scan(scan_id: int) -> dict:
 
         breached = 0
         for obj in objectives:
+            # 취소 감지(#56): 사용자가 POST /cancel로 status=cancelled 하면 목표 사이에서 중단
+            db.refresh(scan)
+            if scan.status == "cancelled":
+                log.info("[worker] 스캔 취소 감지 — 중단: scan_id=%s", scan_id)
+                return {"scan_id": scan_id, "status": "cancelled"}
             # 진화 루프(#39): retrieve→select→mutate→fire→judge→elitism. 뚫으면 Finding+breached.
             try:
                 if run_evolution(db, scan_id, obj, target, canary):
@@ -124,7 +129,10 @@ def run_scan(scan_id: int) -> dict:
             publish(scan_id, "progress", {"phase": "objective_done", "status": obj.status},
                     db=db, objective_id=obj.objective_id)
 
-        # ── done ──
+        # ── done ── (취소된 경우 done으로 덮어쓰지 않음)
+        db.refresh(scan)
+        if scan.status == "cancelled":
+            return {"scan_id": scan_id, "status": "cancelled"}
         scan.status = "done"
         scan.finished_at = _now()
         db.commit()
