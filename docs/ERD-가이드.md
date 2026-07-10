@@ -210,7 +210,7 @@ MITRE ATLAS 공격 기법 **표준 사전**(12개, 고정). 다른 테이블이 
 | created_at | 발생 시각 | `15:01:23` |
 | updated/deleted_at | 공통 | |
 
-- 역할 ①**실시간 유실방어**(먼저 저장→pub/sub 방송, 순번으로 복구) ②감사 타임라인.
+- 역할 ①**실시간 유실방어**(scan_events에 저장 → FastAPI가 id>after 폴링, 순번으로 복구) ②감사 타임라인.
 - 파일 아닌 **DB 테이블**인 이유 = "47번 이후만/finding만/목표랑 JOIN/동시쓰기 안전" = 검색·조회·연결 때문.
 
 ## 11. `scan_reports` (스캔 통계 리포트)
@@ -253,11 +253,11 @@ MITRE ATLAS 공격 기법 **표준 사전**(12개, 고정). 다른 테이블이 
 ## 13. 자주 헷갈리는 개념 (부록)
 
 - **액터(actor)**: 대상마다 다른 공격 방법을 감싸는 어댑터. 엔진은 `send(프롬프트)→응답`만 앎. http(API)/browser(UI 자동화).
-- **실시간(SSE)**: 스캔 진행을 생중계로 보는 화면. `워커(Celery) → Redis(pub/sub) → FastAPI → SSE → 브라우저`. FastAPI가 중계기(브라우저는 Redis 직접 접근 X).
-- **pub/sub 유실 방어**: pub/sub은 새지만, **먼저 scan_events(DB)에 저장(persist-then-publish)** → 놓치면 DB에서 순번(id) 기준 재생(SSE Last-Event-ID). "라디오 놓쳐도 전광판(DB)엔 있음".
+- **실시간(SSE)**: 스캔 진행을 생중계로 보는 화면. `워커(Celery) → scan_events(Postgres) 기록 → FastAPI가 DB 폴링(id>after) → SSE → 브라우저`. FastAPI가 중계기(브라우저는 DB 직접 접근 X).
+- **폴링 유실 방어**: scan_events(DB)가 원본 → FastAPI가 id>after로 폴링(persist-then-poll), 놓쳐도 DB에서 순번 재조회(SSE Last-Event-ID). Redis Pub/Sub 안 씀. "라디오 놓쳐도 전광판(DB)엔 있음".
 - **심각도 vs 위험도**: severity=취약점 하나 등급(findings), risk_score=앱 전체 점수(scan_reports). 심각도들 종합=위험도.
 - **Celery vs uvicorn**: uvicorn=빠른 웹 응답, Celery=무겁고 오래 걸리는 스캔 오프로딩. async는 "기다림"만 쪼개고 CPU 계산은 못 쪼개서 Celery로 분리. (PoC는 BackgroundTasks, 프로덕션은 Celery)
-- **Redis 5역할**: 브로커·result backend·pub/sub(SSE)·rate-limit·캐시. RabbitMQ(브로커만)보다 하나로 통합. (PoC엔 Redis도 아직 없음)
+- **Redis 3역할**: 캐시·rate-limit·result backend. 브로커는 RabbitMQ로 분리(2026-07-10), SSE는 Postgres 폴링. (PoC엔 Redis도 아직 없음)
 
 ---
 

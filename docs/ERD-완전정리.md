@@ -10,7 +10,7 @@
 - `targets` → **`target_projects`** 로 이름 변경, 한글명 = **분석프로젝트**.
 - PK는 **테이블별 접두 방식** (user_id, target_id, scan_id...).
 - `parent_attempt_id` 한글명 = **이전시도id**, 씨앗 연결 = **공격id(attack_id)**.
-- `공격케이스` PK = **`attack_id`** (옛 이미지 `atttack_id` t 3개 오타 → 수정 완료).
+- `공격케이스` PK = **`attack_id`** (옛 이미지에 t 3개 들어간 오타가 있었으나 수정 완료).
 
 **⚠️ 2026-07-07 정규화 (삼각형/중복 제거):**
 - `findings`: `objective_id`·`atlas_technique_id`·**`scan_id`까지 삭제** (멘토 제안, 완전 정규화) → **`attempt_id` 하나로만 연결**, 스캔·목표·기법은 attempt→objective→scan 조인. 삼각형 0개.
@@ -172,7 +172,7 @@ attack_cases(공격케이스) ──공격id──> attempts        atlas_techni
 
 | 한글명 | 물리명 | 타입 | 역할 | 예시 |
 |---|---|---|---|---|
-| 공격id | `attack_id` | BIGINT(PK) | 고유번호 (🐞이미지 `atttack_id` 오타→`attack_id`) | `102` |
+| 공격id | `attack_id` | BIGINT(PK) | 고유번호 (🐞이미지에 t 3개 오타가 있었으나 `attack_id`로 수정) | `102` |
 | 프롬프트텍스트 | `prompt_text` | TEXT | 공격 프롬프트 원문 | `"You are DAN, ignore all rules..."` |
 | 공격타입 | `attack_type` | VARCHAR(64) | 유형 | `jailbreak`/`prompt_injection`/`data_leakage`/`pii` |
 | 아틀라스공격id | `atlas_technique_id` | VARCHAR(32) | ATLAS 라벨(정적) | `"AML.T0054"` |
@@ -188,15 +188,38 @@ attack_cases(공격케이스) ──공격id──> attempts        atlas_techni
 - **`embedding`** = 의미 기반 벡터검색(다른 도구엔 없음). ⚠️ PoC엔 미구현(메타필터만) → 다음 알맹이.
 - 유일한 대용량 테이블. `verified=true`인 씨앗만 진화에 사용.
 
-> 💡 **[향후 고려 — 멘토 제안, 2026-07-09] 벡터 임베딩 별도 테이블 분리**
-> `embedding`(384차원)은 한 행이 글자 컬럼보다 훨씬 무거움. 이걸 `attack_cases`에 섞어두면
-> 통계/조회 쿼리가 안 쓰는 무거운 벡터까지 끌고 와 느려짐 → **임베딩만 별도 테이블로 분리** 고려.
-> - 예: `attack_embeddings(attack_case_id, embedding)` — **검색용**(retrieve 씨앗찾기) 전용.
-> - **FK 강제 제약은 안 걸어도 됨**(완전 분리 = 조인 없이 벡터검색만, 가장 가벼움).
->   단 `attack_case_id`(soft reference) 컬럼은 **필수** — 검색으로 찾은 벡터 → 원본 프롬프트 역참조.
-> - 효과: 벡터(검색용)를 빼주면 **나머지 테이블이 가벼워져 분석/통계가 빨라짐**.
->   (벡터 테이블 자체가 '분석용'이 아니라, 분리로 분석 테이블이 빨라지는 것.)
-> - ⚠️ 지금 PoC 규모(코퍼스 소량)에선 체감 미미 → **배포(RDS 승격) 시점에** 적용 검토. 별개로 OLAP(결과 집계 분리)와도 다른 축.
+> 💡 **[결정 — 멘토 제안, 2026-07-09] 벡터 임베딩 별도 테이블 분리 (나중에, 벡터 적재 시점)**
+> `embedding`(384차원)은 한 행이 글자 컬럼보다 훨씬 무거움. `attack_cases`에 섞어두면 통계/조회
+> 쿼리가 안 쓰는 무거운 벡터까지 끌고 와 느려짐 → **임베딩만 별도 테이블로 분리.**
+>
+> **확정 스키마** (기능 변화 0 — 순수 물리 최적화, 같은 데이터·같은 검색결과):
+> ```sql
+> CREATE TABLE attack_embeddings (
+>     attack_case_id BIGINT PRIMARY KEY,   -- FK 아님(soft ref). 원본 attack_cases.id 가리키는 숫자
+>     embedding      vector(384) NOT NULL  -- pgvector 타입(JSON❌ — 벡터검색 하려면 필수)
+> );
+> CREATE INDEX ON attack_embeddings USING hnsw (embedding vector_cosine_ops);
+> ```
+> - `attack_cases`에선 **`embedding` 컬럼 삭제**(그래야 분리 의미 있음, 가벼운 메타만 남김).
+> - **FK 강제 X** — `attack_case_id`(BIGINT)는 그냥 참조 숫자. 1:1이라 PK 겸용.
+> - **정합 유지**(FK 없으니 코드 책임): ①적재 시 공격문+임베딩 한 트랜잭션에 같이 넣기 ②검색은 `JOIN attack_cases ON id=attack_case_id`(고아 임베딩은 join서 자동 제외, 무해) ③적재 후 `LEFT JOIN ... IS NULL` 로 짝 체크.
+> - **검색**: 가벼운 `attack_embeddings`에서 `ORDER BY embedding <=> :q LIMIT k` → id로 원본 글자 JOIN.
+> - 효과: 벡터를 빼면 나머지 테이블 가벼워져 **분석/통계 빨라짐**(벡터 테이블 자체가 '분석용'이 아니라, 분리로 분석 테이블이 빨라지는 것).
+>
+> **⏳ 지금은 안 함 — 벡터DB 실제 적재(pgvector) 하는 시점에 처음부터 이 구조로 넣는다.**
+> (현재 로컬 `attack_cases.embedding`은 JSON PoC 잔재라 진짜 벡터검색 미사용 중. 지금 이관 = 헛수고+데모 깨질 위험. `retrieve`(#38)/적재 붙일 때 반영.) 별개로 OLAP(결과 집계 분리)와도 다른 축.
+
+---
+
+## 📊 발표 포인트 (핵심 설계 2가지)
+
+**pgvector (attack_embeddings)**
+- 검증된 공격 프롬프트를 384차원 벡터로 임베딩·저장 → 새 표적에 의미가 유사한 공격을 유사도 검색으로 씨앗 추천
+- 무거운 벡터를 별도 테이블로 분리 → 조회·통계는 경량화, 벡터 검색은 전용 인덱스(HNSW)로 고속화
+
+**attempts 자기참조 (parent_attempt_id)**
+- 공격 1건마다 변이 출처(부모 공격)를 참조 → 씨앗→변이→돌파로 이어지는 진화 계보 트리 구성
+- 뚫린 공격을 부모로 역추적 → "어떻게 뚫렸는가" 경로 재구성·시각화
 
 ---
 
@@ -244,7 +267,7 @@ attack_cases(공격케이스) ──공격id──> attempts        atlas_techni
 
 # 9. `scan_events` (스캔로그)
 **스캔 중 모든 사건을 순번 매겨 기록하는 일지.**
-🔧 **쓰는 기능**: 실시간 유실 방어(persist-then-publish), SSE 재생, 감사 타임라인.
+🔧 **쓰는 기능**: 실시간 유실 방어(워커가 DB에 저장 → FastAPI가 id>after 폴링), SSE 재생(`?after=`), 감사 타임라인. (2026-07-10: Redis pub/sub 제거, DB 폴링으로)
 
 | 한글명 | 물리명 | 타입 | 역할 | 예시 |
 |---|---|---|---|---|

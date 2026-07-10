@@ -8,7 +8,9 @@
 
 ## 1. 한 줄 요약 & 확정 스택
 
-**우리 스택 = React(Vite, TS, Vercel) + NGINX + FastAPI + Celery + Redis(5역할) + PostgreSQL+pgvector + 로컬LLM(Ollama, 선택) + 외부API(Haiku, 극소수) + 취약 더미앱(격리)**
+**우리 스택 = React(Vite, TS, Vercel) + NGINX + FastAPI + Celery + RabbitMQ(브로커) + Redis(캐시·rate-limit·result) + PostgreSQL+pgvector + 로컬LLM(Ollama, 선택) + 외부API(Haiku, 극소수) + 취약 더미앱(격리) + 관측성(Prometheus·Grafana·Loki·Jaeger→Slack)**
+
+> 🔄 **2026-07-10 아키텍처 변경**(근거: `결정로그-2026-07-10-메시지큐.md`): 브로커 Redis→**RabbitMQ** 분리 · Redis 5역할→**3역할**(캐시·rate-limit·result) · 실시간 Redis Pub/Sub→**Postgres 폴링 SSE** · 유실=상태기록+멱등+재시작 · Kafka 미도입.
 
 ### 확정 컴포넌트 표
 
@@ -18,7 +20,10 @@
 | **Gateway** | NGINX | 리버스 프록시(HTTPS·라우팅·백엔드 은폐) |
 | **API** | FastAPI | 대상 등록, 스캔 트리거, 조회, SSE 진행 스트림 |
 | **Worker** | Celery (FastAPI 같은 컨테이너) | 진화 엔진 비동기 실행 |
-| **Queue & Pub/Sub** | Redis (5역할) | ①브로커(스캔큐) ②상태저장 ③실시간채널 ④rate-limit좌표 ⑤캐시 |
+| **Broker** | RabbitMQ | Celery 메시지 브로커(태스크 배달) — 정식 브로커로 유실 완화 |
+| **Cache/Limit/Result** | Redis (3역할) | ①캐시(벡터검색 결과) ②rate-limit 좌표 ③Celery result backend |
+| **실시간(SSE)** | Postgres 폴링 | 워커가 scan_events 기록 → FastAPI가 `id>after` 폴링 스트림 (Pub/Sub 제거) |
+| **관측성** | Prometheus·Grafana·Loki·Jaeger→Slack | 메트릭·로그·트레이싱·알림(운영) |
 | **데이터** | PostgreSQL + pgvector | 관계형(진화계보, Target/Scan/Attempt/Finding) + 공격코퍼스 벡터검색 |
 | **공격생성(옵션)** | Ollama (로컬 LLM) | 위험한 프롬프트 생성 격리(거부·밴 리스크 회피) |
 | **판정폴백** | Haiku API | 극소수 애매 판정만(비용 최소화) |
@@ -78,7 +83,7 @@
       - 증거(스크린샷, 트랜스크립트) 저장
    
 6. 프론트 실시간 관전
-   - SSE 채널 구독 (Redis pub/sub)
+   - SSE 채널 구독 (scan_events DB 폴링, id>after)
    - 워커 진행 상황 실시간 수신 (진화세대, 적중점수, 진행률)
    
 7. 스캔 완료 → 대시보드 표시
@@ -95,9 +100,10 @@ sequenceDiagram
     participant Front as Frontend<br/>(React)
     participant NGINX as NGINX<br/>(리버스 프록시)
     participant API as FastAPI<br/>(API 서버)
-    participant Redis as Redis<br/>(큐/채널)
+    participant MQ as RabbitMQ<br/>(브로커)
+    participant Redis as Redis<br/>(캐시/rate-limit/result)
     participant Worker as Celery<br/>(워커)
-    participant DB as PostgreSQL<br/>(데이터)
+    participant DB as PostgreSQL<br/>(데이터+scan_events)
     participant Target as 취약앱<br/>(대상)
     participant Judge as Judge<br/>(판정)
 
@@ -116,13 +122,12 @@ sequenceDiagram
     User->>Front: 3️⃣ 스캔 시작
     Front->>NGINX: POST /api/scans/{target_id}/run
     NGINX->>API: 태스크 생성 + 큐 투입
-    API->>Redis: LPUSH celery:queue:scans
+    API->>MQ: 태스크 발행 (RabbitMQ)
     API->>DB: Scan 레코드 생성
     API-->>Front: task_id 반환 (즉시)
 
     par 워커 실행 (백그라운드)
-        Worker->>Redis: BRPOP celery:queue:scans (대기)
-        Redis-->>Worker: 태스크 수신
+        MQ-->>Worker: 태스크 배달
         Worker->>DB: pgvector 검색: verified 씨앗 K개
         DB-->>Worker: 공격 프롬프트 리스트
         
@@ -134,14 +139,18 @@ sequenceDiagram
             Worker->>Judge: 4️⃣ Judge (fitness 점수)
             Judge-->>Worker: 점수
             Worker->>DB: 5️⃣ Update (Attempt 저장)
-            Worker->>Redis: PUBLISH channel:scan:abc123 (진행상황)
+            Worker->>DB: scan_events 기록 (진행상황)
         end
 
         Worker->>DB: Finding 저장 (결과)
         Worker->>Redis: SET celery:result:abc123 (완료상태)
     and
-        Front->>Redis: 3️⃣ SUBSCRIBE channel:scan:abc123
-        Redis-->>Front: 진행 업데이트 실시간 수신
+        loop SSE 폴링 (~1초 간격)
+            Front->>API: 3️⃣ GET /stream (연결 유지)
+            API->>DB: SELECT scan_events WHERE id>after
+            DB-->>API: 신규 이벤트 목록
+            API-->>Front: text/event-stream 프레임
+        end
         Front->>Front: 진화 트리 실시간 렌더링
     end
 
@@ -176,9 +185,13 @@ flowchart TB
             Celery["Celery Worker<br/>(진화 엔진)"]
         end
 
+        subgraph Broker["메시지 브로커"]
+            RabbitMQ["RabbitMQ<br/>(Celery 브로커<br/>태스크 배달)"]
+        end
+
         subgraph Storage["데이터 스토어"]
-            Postgres["PostgreSQL<br/>+pgvector<br/>(관계형<br/>+ 벡터검색)"]
-            Redis["Redis<br/>(브로커<br/>+ 채널<br/>+ 캐시<br/>+ rate-limit)"]
+            Postgres["PostgreSQL<br/>+pgvector<br/>(관계형<br/>+ 벡터검색<br/>+ scan_events)"]
+            Redis["Redis<br/>(캐시<br/>+ rate-limit<br/>+ result backend)"]
         end
 
         subgraph GenModel["생성 모델 (선택)"]
@@ -196,12 +209,13 @@ flowchart TB
 
     React -->|HTTP/HTTPS| NGINX
     NGINX -->|라우팅| FastAPI
-    FastAPI -->|큐 관리<br/>pub/sub| Redis
+    FastAPI -->|작업 배달| RabbitMQ
     FastAPI -->|데이터 조회| Postgres
-    Celery -->|큐 소비| Redis
+    FastAPI -->|scan_events<br/>폴링| Postgres
+    Celery -->|작업 소비| RabbitMQ
     Celery -->|씨앗 검색| Postgres
     Celery -->|발사| AcmeBank
-    Celery -->|진행 발행| Redis
+    Celery -->|scan_events<br/>기록| Postgres
     Celery -->|캐시| Redis
     Celery -->|창의변이| Ollama
     Celery -->|판정폴백| Haiku
@@ -288,7 +302,7 @@ flowchart TD
 | 관심사 | PoC 런타임 | 프로덕션 |
 |---|---|---|
 | **DB** | SQLite (로컬파일) | PostgreSQL + pgvector (클러스터) |
-| **비동기워커** | FastAPI `BackgroundTasks` | Celery + Redis 브로커 |
+| **비동기워커** | FastAPI `BackgroundTasks` | Celery + RabbitMQ 브로커 |
 | **임베딩검색** | 메타필터만 (SQL WHERE) | pgvector + HNSW 인덱스 |
 | **공격코퍼스** | 1,405개 (jailbreak subset) | 60만개 (통합 + dedup) |
 | **생성 LLM** | Haiku API만 | Ollama(L2) 옵션 + Haiku(L3 폴백) |
@@ -472,7 +486,7 @@ ai-redteam/
 │   │   │   ├── http_client.py        (429회피·재시도 래퍼)
 │   │   │   ├── embedding.py          (sentence-transformers)
 │   │   │   ├── atlas_mapper.py       (정적 테이블 매핑)
-│   │   │   └── logger.py             (SSE pub/sub)
+│   │   │   └── logger.py             (SSE: scan_events DB 폴링 소스)
 │   │   │
 │   │   ├── db/
 │   │   │   ├── __init__.py
@@ -606,33 +620,43 @@ finding.atlas_technique_ids = map_attack_to_atlas(
 
 ## 10. 실시간 모니터링 & SSE
 
-### 10.1 pub/sub 채널 구조
+### 10.1 SSE — scan_events DB 폴링
+
+> 2026-07-10 변경: pub/sub(Redis PUBLISH/SUBSCRIBE) 대신 워커가 `scan_events` 테이블(Postgres)에
+> 진행상황을 기록하고, FastAPI SSE 엔드포인트가 `scan_events_id > after` 조건으로 주기 폴링해 전송한다.
+> offset(`after`)은 `scan_events_id`(DB PK)이므로 클라이언트가 `?after=<마지막수신id>`로 재접속하면
+> 유실 없이 이어받을 수 있다.
 
 ```python
 # FastAPI
 @app.get("/api/scans/{scan_id}/stream")
-async def stream_scan_progress(scan_id: str):
+async def stream_scan_progress(scan_id: str, after: int = 0):
     """
     클라이언트가 SSE로 구독하면,
-    워커의 진행상황을 실시간 스트리밍.
+    scan_events 테이블을 폴링하며 신규 이벤트를 실시간 스트리밍.
+    재접속 시 ?after=<마지막수신 scan_events_id>로 이어받음.
     """
     async def event_generator():
-        pubsub = redis.pubsub()
-        pubsub.subscribe(f"channel:scan:{scan_id}")
-        
-        for message in pubsub.listen():
-            if message["type"] == "message":
-                # 워커가 발행한 JSON:
-                # {
-                #   "generation": 1,
-                #   "seed_id": "abc123",
-                #   "fitness": 0.85,
-                #   "mutation_op": "expand",
-                #   "success": false,
-                #   "prompt_preview": "..."
-                # }
-                yield f"data: {message['data']}\n\n"
-    
+        last_id = after
+        while True:
+            rows = await db.fetch_all(
+                """
+                SELECT scan_events_id, event_type, payload
+                FROM scan_events
+                WHERE scan_id = :scan_id AND scan_events_id > :after
+                ORDER BY scan_events_id
+                """,
+                {"scan_id": scan_id, "after": last_id},
+            )
+            for row in rows:
+                last_id = row["scan_events_id"]
+                # payload 예: {"generation":1,"seed_id":"abc123","fitness":0.85,
+                #              "mutation_op":"expand","success":false,"prompt_preview":"..."}
+                yield f"id: {last_id}\ndata: {json.dumps(row['payload'])}\n\n"
+                if row["event_type"] == "done":
+                    return
+            await asyncio.sleep(1)  # 폴링 간격 ~1초
+
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream"
@@ -708,7 +732,7 @@ useEffect(() => {
 | 질문 | 답 |
 |---|---|
 | **왜 pgvector, OpenSearch 아닌가?** | 우리 검색은 메타필터 SQL → 좁힌 수백 개만 벡터 랭킹. 하이브리드 강점을 안 씀. 관계형(진화트리 JOIN) 필요. 규모(수십만) 한계 무관. |
-| **왜 Redis 하나?** | 5역할 겸용: 브로커①, 상태②, pub/sub③, rate-limit④, 캐시⑤. 임시데이터만 저장. 영구데이터는 Postgres. 확장 시 분리 가능. |
+| **왜 브로커·Redis를 분리했나?** | 브로커=RabbitMQ(태스크 배달 전담, 분리). Redis=3역할 겸용: 캐시(벡터검색 결과)①, rate-limit②, Celery result backend③. 실시간(SSE)은 Redis pub/sub이 아니라 Postgres 폴링(`scan_events`, id>after)으로 처리. RabbitMQ만으론 유실 방지가 안 됨(at-least-once)이라 Postgres 상태기록 + 태스크 멱등화 + 재시작(MVP은 수동 재시도)으로 보완. 임시데이터만 Redis 저장, 영구데이터는 Postgres. |
 | **왜 FastAPI + Celery?** | 공격/LLM 호출 전부 I/O 바운드 → async 우수. 임베딩·판정모델 전부 파이썬. 스캔이 분 단위라 비동기 필수. |
 | **왜 Haiku (GPT-4o 아닌가)?** | 비용 최소화. 판정은 분석(Haiku 충분), 대상 공격은 실제 모델. Haiku로 충분하고 극소수만 호출. |
 | **왜 로컬 LLM (Ollama)?** | 공격 프롬프트 생성 → 상용 LLM은 거부/밴 위험. 로컬로 빼면 사라짐. L0(검색) → L1(결정론적) → L2(Ollama) → L3(Haiku) 폴백. |

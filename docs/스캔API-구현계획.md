@@ -1,7 +1,7 @@
 # 스캔 API 구현 계획 (POST /scans 이후 전부 — 사용자 담당)
 
 > 목적: `POST /scans`부터 진화 루프·SSE·판정·결과 API까지, **기능별로 코드 단위**로 어떻게 구현할지 계획.
-> 근거: `아키텍처-기술스택.md`(Celery·Redis 5역할·SSE persist-then-publish) · `ERD-완전정리.md`(scan_events·scan_reports 등) · `API-명세.md` §4·§5 · `오픈소스-분석.md §6`(GPTFuzzer 루프) · `_poc_참고용`의 **동작하는 evolve.py**(포팅 원본) · claude-api 스킬(Haiku 4.5 사실).
+> 근거: `아키텍처-기술스택.md`(RabbitMQ 브로커·Redis 3역할·DB폴링 SSE) · `ERD-완전정리.md`(scan_events·scan_reports 등) · `API-명세.md` §4·§5 · `오픈소스-분석.md §6`(GPTFuzzer 루프) · `_poc_참고용`의 **동작하는 evolve.py**(포팅 원본) · claude-api 스킬(Haiku 4.5 사실).
 > 상태: **계획만.** 구현 착수 전. ⬇️ "결정 필요" 항목은 팀장 확정 후 진행.
 
 ---
@@ -15,20 +15,19 @@
                                     │
       recon → objectives 생성 → 목표별 진화루프(orchestrator)
                                     │  매 사건마다:
-      ┌─────────────── persist-then-publish ───────────────┐
-      │ 1) scan_events(DB)에 먼저 저장(순번=id)            │  ← 유실복구 원본
-      │ 2) Redis PUBLISH channel:scan:{id} (같은 payload)  │  ← 실시간 방송
-      └────────────────────────────────────────────────────┘
+      ┌─────────────── persist-then-poll ───────────────┐
+      │ 워커가 scan_events(DB)에 저장만(순번=id)          │  ← 유실복구 원본이자 유일한 저장소
+      └────────────────────────────────────────────────┘
                                     │
-[FE] GET /scans/{id}/stream(SSE) ──▶ [FastAPI] Redis SUBSCRIBE → 흘려보냄
-     (재접속 시 ?after=N) ─────────▶ scan_events에서 N번 이후 DB로 catch-up
+[FE] GET /scans/{id}/stream(SSE) ──▶ [FastAPI] scan_events를 id>after로 폴링 → 흘려보냄
+     (재접속 시 ?after=N) ─────────▶ 같은 폴링 쿼리로 자연스럽게 catch-up
                                     │
       루프 종료 → findings 저장 → scan_reports(통계 스냅샷) 생성 → done 이벤트
                                     │
 [FE] GET /scans/{id}/report·heatmap·findings·summary·tree ──▶ DB 집계 조회
 ```
 
-**핵심 원칙(아키텍처 §3.3·§10)**: SSE로 그냥 쏘면 놓친 이벤트는 영영 사라짐. 그래서 **① DB(scan_events)에 먼저 저장 → ② Redis로 방송**. 사용자는 실시간(Redis)으로 보되, 끊기면 DB에서 순번(`?after=`)으로 다시 받아온다. = "라디오 놓쳐도 전광판(DB)엔 남아있음".
+**핵심 원칙(아키텍처 §3.3·§10)**: SSE로 그냥 쏘면 놓친 이벤트는 영영 사라짐. 그래서 **① 워커가 scan_events(DB)에 저장 → ② FastAPI가 id>after로 폴링해 스트림**. Redis 방송 없음 — DB가 유일한 원본이라 끊겨도 순번(`?after=`)으로 다시 받아온다. = "라디오 놓쳐도 전광판(DB)엔 남아있음"(DB가 원본).
 
 ---
 
@@ -88,7 +87,7 @@ async def _run_scan_async(scan_id):
     cleanup_cache(f"{target.target_id}:")     # 액터 auth 토큰 캐시 정리
 ```
 
-**옛 참고용 원본**: `_poc_참고용/backend/app/engine/evolve.py:run_scan`이 정확히 이 구조(단, in-memory scan_manager·BackgroundTasks). 우리는 **Celery + Redis pub/sub**로 승격 + 정규화 스키마 반영.
+**옛 참고용 원본**: `_poc_참고용/backend/app/engine/evolve.py:run_scan`이 정확히 이 구조(단, in-memory scan_manager·BackgroundTasks). 우리는 **Celery + RabbitMQ 브로커 + DB폴링 SSE**로 승격 + 정규화 스키마 반영.
 
 ### 2-A. 정찰(recon) = 스캔 **첫 단계** (앱 맞춤의 핵심) — `app/recon.py`
 > ⚠️ 후순위 아님. "AI가 무슨 앱인지 판단 → 관련 공격 시행"의 그 단계. **AI 비용 0**(라이브러리로).
@@ -111,6 +110,22 @@ def profile_target(target) -> dict:
 ### 2-B. 필터 & 성공판단 — "누가 하나" (규칙이 함, AI 아님)
 - **씨앗 필터(어떤 공격 고를지)** = **규칙**. `사용자가 고른 attack_types` + `recon 프로파일` → `WHERE attack_type=cat AND (defenses/tools/rag 기반 조건)`. AI는 프로파일 만들 때만 옵션.
 - **성공 판단(뚫렸나)** = **judge, 주로 룰**. 카나리 `FLAG` 매칭=자동 확정(오탐 0%). 거절패턴=안전. **애매 1~3%만 Haiku**.
+
+### 2-B-1. "여기 공격해야겠다" 판단 = 프로파일 → 공격유형 정적 매핑 (의사 증상표식, AI 아님)
+정찰 프로파일의 각 특징 → 넣을 공격이 정해져 있음(기획 §5.1). 즉흥 아님, 규칙 lookup:
+
+| 정찰 발견 특징 | → 넣을 공격(objective) | ATLAS |
+|---|---|---|
+| `tools`에 이체·메일·DB조회 | 도구 오용·과잉권한 | T0053 |
+| `rag_sources`에 문서 | 간접 프롬프트 인젝션 | T0051.001 |
+| `defenses`에 moderation/필터 | 우회형(인코딩·다국어·난독화) 씨앗 우선 | T0051/T0054 |
+| `system_prompt` 코드에서 확보 | 프롬프트 유출 + 카나리 없이 정확 판정 | T0056 |
+| `model`=gpt-4o 등 | 그 모델 `worked_on` 씨앗 우선(필터) | — |
+| 방어 없음 | 직접 인젝션·탈옥 바로 | T0051/T0054 |
+
++ **사용자가 화면에서 체크한 attack_types 13종**(명시 선택)을 합쳐 objectives 생성 → 목표별 씨앗 필터.
+- 예(AcmeBank): `{tools:[이체], defenses:[moderation], system_prompt:앎}` → 도구오용+유출 목표 + 인코딩 우회 씨앗 우선.
+- **판단 뼈대 = 규칙(표 lookup).** AI(Haiku)는 코드가 애매해 앱 종류 판별이 안 될 때 코드 해석 보조만(옵션).
 
 ### 2-C. AI(Haiku) 호출 자리 = 최대 4곳 (전부 최소화·옵션)
 | 자리 | 언제 | 필수? |
@@ -237,45 +252,45 @@ def judge_with_haiku(response, objective):
 
 ---
 
-## 5. SSE + scan_events — 실시간 (persist-then-publish)
+## 5. SSE + scan_events — 실시간 (persist-then-poll)
 
-### 5-1. 이벤트 브로커 (`app/engine/scan_manager.py` 신설)
+### 5-1. 이벤트 저장 (`app/engine/scan_manager.py` 신설)
 ```python
 # PoC(단일 프로세스): in-memory asyncio.Queue (옛 참고용 그대로)
-# 운영(Celery 워커 ↔ FastAPI 별 프로세스): ★Redis pub/sub 필수★
+# 운영(Celery 워커 ↔ FastAPI 별 프로세스): 워커는 DB에 저장만, SSE는 DB를 폴링
 async def publish(scan_id, event_type, payload, db=None, objective_id=None):
-    # ① persist: scan_events에 먼저 저장(순번=scan_events_id) — 유실복구 원본
+    # persist: scan_events에 저장(순번=scan_events_id) — 유일한 원본이자 실시간 소스
     if db: db.add(ScanEvent(scan_id=scan_id, objective_id=objective_id,
                             payload={"event":event_type, **payload})); db.commit()
-    # ② publish: Redis 채널로 방송
-    redis.publish(f"channel:scan:{scan_id}", json.dumps({"event":event_type, **payload}))
+    # 방송 없음 — FastAPI SSE가 scan_events를 id>after로 폴링해서 읽어감
 ```
-> ⚠️ **왜 Redis 필수인가**: Celery 워커와 FastAPI가 **다른 프로세스**라 in-memory 큐는 안 넘어감. 옛 PoC는 asyncio.create_task(같은 프로세스)라 in-memory로 됐지만, 우리는 Celery로 분리 → **Redis pub/sub 아니면 SSE가 못 흐름**. (이게 "샐러리·레디스 잘 붙여라"의 실체)
+> ⚠️ **프로세스 분리는 브로커/폴링으로 각각 해결**: Celery 워커와 FastAPI가 **다른 프로세스**라 in-memory 큐는 안 넘어감. 태스크 큐잉은 RabbitMQ 브로커가 해결하고, 실시간 스트리밍은 **공유 DB(scan_events)를 FastAPI가 폴링**하는 걸로 해결 — Redis pub/sub 불필요.
 
-### 5-2. `GET /scans/{id}/stream?token=&after=` (SSE)
+### 5-2. `GET /scans/{id}/stream?token=&after=` (SSE, DB 폴링)
 ```python
 @router.get("/{scan_id}/stream")
 async def stream(scan_id, token=None, after: int = 0, db=Depends(get_db)):
     user = user_from_token(token, db)      # EventSource는 헤더 못 실음 → ?token= 쿼리
     _owned_scan(db, scan_id, user)
     async def gen():
-        # (A) catch-up: 끊겼다 재접속 → after 순번 이후를 DB에서 재생
-        for ev in db.query(ScanEvent).filter(ScanEvent.scan_id==scan_id,
-                                             ScanEvent.scan_events_id > after).order_by(...):
-            yield f"id: {ev.scan_events_id}\nevent: {ev.payload['event']}\ndata: {json.dumps(ev.payload)}\n\n"
-        # (B) live: Redis 구독해 실시간
-        pubsub = redis.pubsub(); pubsub.subscribe(f"channel:scan:{scan_id}")
-        for msg in pubsub.listen():
-            if msg["type"]=="message":
-                data = json.loads(msg["data"]); yield f"event: {data['event']}\ndata: {msg['data']}\n\n"
-                if data["event"]=="done": break
+        last = after
+        while True:
+            rows = db.query(ScanEvent).filter(ScanEvent.scan_id==scan_id,
+                                              ScanEvent.scan_events_id > last).order_by(
+                                              ScanEvent.scan_events_id).all()
+            for ev in rows:
+                last = ev.scan_events_id
+                yield f"id: {ev.scan_events_id}\nevent: {ev.payload['event']}\ndata: {json.dumps(ev.payload)}\n\n"
+                if ev.payload["event"] == "done": return
+            await asyncio.sleep(1)     # 폴링 간격
     return StreamingResponse(gen(), media_type="text/event-stream")
 ```
 - 이벤트 종류(API명세 §4): `log` / `progress`(generation·best_score·current_attack·summary) / `attempt` / `finding` / `done`.
 - `id:`(=scan_events_id) 실어서 FE가 `Last-Event-ID`로 유실복구.
-- `GET /scans/{id}/events?after=N` = 같은 걸 폴링(SSE 미지원 브라우저·catch-up).
+- 재접속 시 `?after=N`을 넘기면 같은 폴링 쿼리가 그대로 catch-up 역할까지 함(별도 분기 불필요).
+- `GET /scans/{id}/events?after=N` = 같은 폴링을 1회성으로 노출(SSE 미지원 브라우저).
 
-**문제**: `redis.pubsub().listen()`은 blocking → async SSE에서 `run_in_executor`/`aioredis`로 비동기화 필요. 또는 워커가 `progress`를 `scans.progress`에도 덮어써서 폴링 폴백 제공.
+**문제**: pub/sub는 안 쓰므로 blocking 이슈는 없음. 대신 **폴링 간격/부하 조절**이 핵심 — 간격 1초, 스트림 최대 지속시간 상한(예: 30분)을 두고 초과 시 클라이언트가 재접속(`?after=`)하게 함.
 
 ---
 
@@ -322,28 +337,28 @@ def ai_summary(scan_id, db):
 
 ---
 
-## 8. Celery + Redis 배선 (인프라)
+## 8. Celery + RabbitMQ/Redis 배선 (인프라)
 
 ```python
 # app/celery_app.py (신설)
 from celery import Celery
-celery_app = Celery("redteam", broker=settings.redis_url, backend=settings.redis_url)
+celery_app = Celery("redteam", broker=settings.rabbitmq_url, backend=settings.redis_url)
 
-# docker-compose.yml: worker 서비스 주석 해제
+# docker-compose.yml: worker·rabbitmq 서비스 주석 해제
 # worker: build:. command:["celery","-A","app.celery_app","worker","--loglevel=info"]
-#         depends_on:[db,redis]  environment: DATABASE_URL·REDIS_URL
+#         depends_on:[db,rabbitmq,redis]  environment: DATABASE_URL·RABBITMQ_URL·REDIS_URL
 ```
 
-**Redis 5역할 중 이번에 쓰는 것**: ①브로커(run_scan 큐) ②결과백엔드 ③**pub/sub(SSE)** ④rate-limit 좌표(액터가 여러 워커일 때) ⑤캐시(후순위). 
-**문제**: `redis_url` compose 내부는 `redis://redis:6379/0`(호스트는 6380 매핑). Celery·SSE 둘 다 같은 Redis.
+**이번에 쓰는 것**: 브로커=**RabbitMQ**(run_scan 큐) / result backend=**Redis** / SSE=**DB 폴링**(Redis 아님) / rate-limit 좌표(액터가 여러 워커일 때)=Redis(후순위) / 캐시(벡터검색 결과)=Redis(후순위).
+**문제**: `broker_url`은 compose 내부 `amqp://rabbitmq:5672//`, `result_backend`는 `redis://redis:6379/0`(호스트는 6380 매핑). Celery 브로커=RabbitMQ, result backend=Redis, SSE는 둘 다 안 쓰고 Postgres(scan_events) 폴링.
 
-### 8-A. Redis 유실 처리 (일감이 날아갈 수 있나 → 3겹 방어)
-Redis는 인메모리 → 이론상 (a)Redis 크래시 (b)워커 크래시에 큐 일감 유실 가능. 방어:
-1. **Redis AOF** — compose에 `--appendonly yes` **이미 켜짐** → 큐를 디스크에 기록 → 재시작해도 복구(최대 ~1초 손실). → (a) 방어.
+### 8-A. 메시지 유실 처리 (일감이 날아갈 수 있나 → 3겹 방어)
+RabbitMQ도 Redis도 이론상 (a)브로커 크래시 (b)워커 크래시에 큐 일감 유실/중복 가능. 방어:
+1. **RabbitMQ 큐 durable + publisher confirms** — 큐/메시지를 디스크에 기록 → 재시작해도 복구. → (a) 방어. RabbitMQ는 **at-least-once**라 중복 전달도 가능(아래 참고).
 2. **Celery `acks_late=True`** — 워커가 일감 **완료해야 ack** → 중간에 죽으면 재큐잉. → (b) 방어. *(설정 필요)*
 3. **Postgres가 원본 + 청소기** — `scans` 행은 큐보다 **먼저 Postgres에 pending 저장**. 일감 유실돼도 행은 남음 → "pending인데 오래 안 도는 스캔" **sweeper로 재큐잉**. self-testing이라 재실행 안전.
 
-**핵심**: 날아갈 수 있는 건 Redis 안 "일감 티켓"(임시)뿐 — 그것도 3겹. **스캔 결과(attempts·findings·scan_events·리포트)는 전부 Postgres라 애초에 안 날아감.** 진행중 로그도 scan_events(DB)에 있어 복구 가능.
+**핵심**: 날아갈 수 있는 건 브로커 안 "일감 티켓"(임시)뿐 — 그것도 3겹. **스캔 결과(attempts·findings·scan_events·리포트)는 전부 Postgres라 애초에 안 날아감.** 진행중 로그도 scan_events(DB)에 있어 복구 가능. **RabbitMQ도 at-least-once라 중복 실행 가능 → Postgres 상태기록 + 태스크 멱등화(같은 scan_id면 skip) + 재시작이 진짜 방어**(acks_late만으론 중복은 못 막음, 멱등화가 핵심).
 > 근거: `아키텍처-기술스택.md §3.5`(유실 문제). 부트캠프 규모는 ①③만으로도 충분, ②는 운영 승격 시.
 
 ---
@@ -353,8 +368,8 @@ Redis는 인메모리 → 이론상 (a)Redis 크래시 (b)워커 크래시에 �
 | # | 문제 | 대응 |
 |---|---|---|
 | P1 | `get_current_user` 501(팀원 미구현) → 스캔 API 전부 인증 막힘 | 데모는 dev-login. 팀원 auth 완성 대기 or mock 임시 |
-| P2 | Redis pubsub blocking ↔ async SSE 충돌 | aioredis or executor; 폴백=scans.progress 폴링 |
-| P3 | Celery 워커 ↔ FastAPI 프로세스 분리 → in-memory 큐 안 됨 | Redis pub/sub 필수(§5) |
+| P2 | DB 폴링 SSE의 간격/부하 | 폴링 1s + 스트림 최대 지속시간 상한, 초과 시 클라이언트 재접속(§5) |
+| P3 | Celery 워커 ↔ FastAPI 프로세스 분리 → in-memory 큐 안 됨 | 브로커=RabbitMQ(태스크 큐), 실시간=DB 폴링 SSE(§5) — pub/sub 불필요 |
 | P4 | 스캔 취소가 진행중 루프를 못 멈춤(옛 이슈) | 루프마다 `scans.status==failed?` 체크 → break |
 | P5 | Haiku 판정 거부·비용 | 애매구간만 호출 + refusal 폴백 + 캐싱 무의미(짧아서) |
 | P6 | D1 히트맵 겹침(13유형→8 atlas) | objectives atlas dedup |
@@ -366,7 +381,7 @@ Redis는 인메모리 → 이론상 (a)Redis 크래시 (b)워커 크래시에 �
 
 ## 10. ★ 결정 확정 (2026-07-09 팀장) ★
 
-- ✅ **D-실행/SSE**: **처음부터 Celery + Redis pub/sub** (아키텍처 정석). → §8 celery_app 신설 + compose worker 활성화 + §5 Redis pub/sub SSE. BackgroundTasks 경유 안 함.
+- ✅ **D-실행/SSE**: **처음부터 Celery + RabbitMQ 브로커 + DB폴링 SSE** (아키텍처 정석). → §8 celery_app 신설 + compose worker/RabbitMQ 활성화 + §5 DB폴링 SSE. BackgroundTasks 경유 안 함.
 - ✅ **D-판정**: **Haiku 폴백 켜기**. → §4-4 `judge_with_haiku`, 애매구간(0.4~0.7)+카나리 없는 실표적만 호출 + `refusal` 폴백. `anthropic` SDK requirements 추가.
 - ✅ **D-검색**: **메타필터만 먼저**. → §4-1 `retrieve_seeds` attack_type 필터로 관통. 임베딩 벡터랭킹은 관통 확인 후 별도(코퍼스 21,219건 임베딩 완료돼 재료는 있음).
 - ✅ **D-요약**: **스캔 파트 완성 후 실시간 Haiku**. → §7 `GET /scans/{id}/summary` 온디맨드. 진화루프·SSE·결과 먼저.
@@ -374,13 +389,13 @@ Redis는 인메모리 → 이론상 (a)Redis 크래시 (b)워커 크래시에 �
 
 ### 확정 기반 구현 순서 (착수 시)
 ```
-1. 인프라: app/celery_app.py + docker-compose worker + requirements(anthropic·celery·redis 확인)
-2. scan_manager.py: Redis pub/sub publish (persist-then-publish) — SSE 토대 먼저
-3. POST /scans + tasks.run_scan(Celery) 배선 — 껍데기 관통(빈 objective라도 done까지)
+1. 인프라: app/celery_app.py + docker-compose worker/RabbitMQ + requirements(anthropic·celery·kombu·redis 확인)
+2. scan_manager.py: scan_events persist (persist-then-poll) — SSE 토대 먼저
+3. POST /scans + tasks.run_scan(Celery, RabbitMQ 브로커) 배선 — 껍데기 관통(빈 objective라도 done까지)
 4. 엔진 부품: retrieve(메타필터)·select(UCB)·mutate(6연산자)·judge(룰+카나리) 포팅
 5. orchestrator.run_evolution: 옛 evolve.py 로직 → 더미앱에 실발사 → FLAG 뚫기 관통
 6. judge Tier3: Haiku 폴백 배선(+refusal 폴백)
-7. SSE: GET /stream(Redis 구독 + ?after= catch-up) + scan_events
+7. SSE: GET /stream(scan_events id>after DB 폴링 + ?after= catch-up) + scan_events
 8. 결과 API: report·heatmap·findings·tree·attempts·events + generate_report 스냅샷
 9. AI 요약: GET /summary(Haiku)
 10. 액터 배선: 프리플라이트 인증·cleanup·(범위 확정 시)auth_context·safe_mode
