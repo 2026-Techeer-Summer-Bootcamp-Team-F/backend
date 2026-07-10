@@ -89,9 +89,12 @@ def get_scan(scan_id: int, db: Session = Depends(get_db)):
     }
 
 
-@router.get("/{scan_id}/events")
-async def scan_events(scan_id: int, request: Request, after: int = 0):
-    """SSE(#41) — scan_events(DB)를 폴링해 진행상황 스트림. (2026-07-10: Redis pub/sub→DB폴링)
+@router.get("/{scan_id}/stream")
+async def scan_stream(scan_id: int, request: Request, after: int = 0):
+    """SSE(#41) — scan_events(DB)를 폴링해 진행상황 스트림. (API-명세 §5 `/scans/{id}/stream`)
+
+    ⚠️ 경로는 명세·프론트(EventSource)에 맞춰 `/stream`. (구 `/events`에서 정정, 2026-07-10)
+    TODO(auth): 명세는 `?token=<jwt>`(EventSource가 헤더 못 실음) — 팀원 JWT 연동 후.
 
     - 각 이벤트 `id=scan_events_id` → 클라가 끊기면 이어받기. 브라우저 EventSource는 자동
       재접속 때 `Last-Event-ID` 헤더로 마지막 id를 보내므로 이를 `?after=`보다 우선한다.
