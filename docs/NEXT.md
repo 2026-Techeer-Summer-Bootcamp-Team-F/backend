@@ -1,6 +1,61 @@
 # ▶ 다음에 오면 여기부터 (바로 시작용)
 
-> 갱신: **2026-07-09** 세션. 스캔 엔진 구현 착수. 상세 계획: `docs/스캔API-구현계획.md`, 트러블슈팅: `트러블슈팅.md`.
+> 갱신: **2026-07-10 새벽** 세션 종료. 상세 계획: `docs/스캔API-구현계획.md`, 트러블슈팅: `트러블슈팅.md`.
+
+## ☀️ 2026-07-10 진행 — 아키텍처 전환 확정 후 실행 중
+
+**✅ [확정] 메시지큐 아키텍처 변경** (근거: `docs/결정로그-2026-07-10-메시지큐.md`, 팀 확정)
+- **브로커 = RabbitMQ 분리**(Celery 메시지 브로커). Redis는 **캐시·rate-limit·result backend**(3역할).
+- **SSE = DB 폴링 확정**(B안): 워커가 `scan_events`(DB)에 저장 → FastAPI가 `id>after` 폴링해 스트림. Redis Pub/Sub 제거(컨슈머 내려가면 유실).
+  - 이미 persist-then-publish라 전환 쉬움 = `scan_manager.publish()`의 Redis 방송부만 제거.
+- **유실 대응**: RabbitMQ만으론 부족(중복 가능) → Postgres 상태기록 + 태스크 멱등화 + 재시작(MVP=수동 재시도).
+- **Kafka 미도입**(작업 큐 대체 불가). 관측성(Prometheus/Grafana/Loki/Jaeger) compose 추가.
+
+**진행 순서(실행 중)**: ① 기획 문서 정합→push → ② 코드/인프라(RabbitMQ·DB폴링 SSE·관측성) → ③ #37 정찰 머지 → ④ #38 엔진 부품.
+- `feat/#37`에 **정찰 코드 구현+스모크 PASS 상태로 미커밋 보관 중**(working tree). 검토→커밋→클로드 리뷰→머지.
+
+---
+
+## 🔥 지금 개발 상태 (스캔 파이프라인)
+
+**환경**: docker compose(backend·db(pgvector)·redis·worker) 로컬 구동 중. `attack_cases` 21,219건 + atlas_techniques 9건 적재됨.
+
+**진행 (사용자 담당, `POST /scans` 이후):**
+| 이슈 | 내용 | 상태 |
+|---|---|---|
+| #34 | Celery+Redis 백그라운드 실행 뼈대 | ✅ 머지(PR#44) |
+| #35 | 실시간 중계·기록 `scan_manager`(DB 저장; 2026-07-10 방송 제거→폴링) | ✅ 머지(PR#45) |
+| #36 | 스캔 시작~완료 전체 흐름 관통(POST→워커→done) | ✅ 머지(PR#46) |
+| #37 | 정찰(ast+grep 프로파일→공격유형 매핑→objectives) | 🔨 **구현+스모크PASS, feat/#37 미커밋**(내일 검토→커밋→리뷰→머지) |
+| #38 | 엔진 부품(retrieve·select·mutate·judge) | ⬜ 다음 |
+| #39 | 진화루프(실제 FLAG 뚫기) = 가운데 빈 자리 채우기 | ⬜ |
+| #40 | Haiku 판정(애매 1~3%) | ⬜ |
+| #41 | SSE 실시간 화면(`GET /scans/{id}/events`) — **DB 폴링 방식 확정** | ⬜ (이번 세션 구현) |
+| #42 | 결과 API + AI 요약 | ⬜ |
+| #43 | 액터 배선(진화루프→actor.fire) | ⬜ |
+
+**"접수→큐→워커→정찰→(진화 빈자리)→완료" 배관 관통 완료.** 남은 알맹이 = #38·#39(실제 공격).
+
+## 🗣️ 오늘(07-09) 논의·확정한 것 (아키텍처 방어 논리)
+- **Celery 쓰는 이유**: async는 "대기(I/O)"용이라 몇 분짜리 무거운 스캔엔 부적합. 배포 시 유실·웹서버 점유 막으려 **별 프로세스(Celery)로 분리** + 유실 시 재시도·확장.
+- **Redis 3역할**(2026-07-10 변경): ①캐시(벡터검색 결과) ②rate-limit(밴 회피) ③result backend. 브로커·pub/sub는 뺌.
+- **FastAPI↔Celery 직접 통신 불가**(별 프로세스) → 브로커(RabbitMQ)나 DB(공유 저장소) 경유. (공식 문서: AsyncResult도 result backend 조회)
+- **RabbitMQ 쓰는 이유**: 브로커만 정식 RabbitMQ로 분리 → 유실 완화 + "Redis는 정식 브로커 아님" 태클 차단. Redis는 rate-limit·캐시·result로 여전히 필수(역할 안 겹침).
+- **유실 처리**: 중요 데이터(스캔 상태·이벤트)는 **Postgres 원본** + 태스크 멱등화(같은 scan_id면 skip) + 재시작(일시오류=max_retries, 워커 급사=하트비트 감지→스위퍼/수동 재시도). 임시 데이터(rate-limit)는 잃어도 무해. **원리 = "영구·중요=DB / 빠른·임시=Redis".**
+- **rate-limit은 왜 Redis(DB 아님)**: 요청 카운터가 초당 수백 번 갱신되는 임시 데이터 → 인메모리 원자적 카운터·자동만료가 적합.
+- **상태는 왜 DB(폴링)**: Celery 기본 state는 PENDING 모호·TTL 증발 → Postgres에 원본 저장(이미 `scans.status`·`scan_events`로 구현됨).
+- **pgvector·임베딩 분리**: `attack_embeddings(attack_case_id, embedding vector(384))` 별도 테이블(FK 강제X, soft ref). 벡터 빼서 검색은 빠르게·나머지 가볍게. **구현은 벡터 실제 적재 시점에**(지금 X). → `docs/ERD-완전정리.md` 발표포인트·메모.
+
+## 오늘(07-09) 확정한 것 (개발 규칙)
+- **리뷰 워크플로우**: CodeRabbit 토큰 상한 → **Claude 코드리뷰로 대체 가능**. develop "대화해결 필수" 룰셋이라 리뷰 후 `gh pr merge --admin`(트러블 #18).
+- **목표(objectives) 0개 처리**: #36 관대(즉시 done). "0개면 422 거절"은 #37 이후(코드 `TODO(#37)`).
+- **정찰 대상 = 팀원 실제 공격 챗봇 레포**(dummy.py는 임시 스탠드인). 엔진 범용, ⚠️ 리포 fetch는 팀원 auth(`repo` 스코프) 대기.
+
+---
+
+## (이하 2026-07-07 기록 — 참고용)
+
+> 갱신: **2026-07-07** 세션 종료. 결정 기록: `docs/결정로그-2026-07-07.md`, 트러블슈팅: `트러블슈팅.md`, 차례: `README.md`.
 
 ## 🔥 지금 상태 (2026-07-09) — 스캔 파이프라인 구현 중
 
@@ -10,7 +65,7 @@
 | 이슈 | 내용 | 상태 |
 |---|---|---|
 | #34 | Celery+Redis 백그라운드 실행 뼈대 | ✅ 머지(PR#44) |
-| #35 | 실시간 중계·기록 `scan_manager`(persist-then-publish) | ✅ 머지(PR#45) |
+| #35 | 실시간 중계·기록 `scan_manager`(DB 저장; 2026-07-10 방송 제거→폴링) | ✅ 머지(PR#45) |
 | #36 | 스캔 시작~완료 전체 흐름 관통(POST→워커→done) | ✅ 머지(PR#46) |
 | #37 | 정찰(ast+grep 프로파일→공격유형 매핑→objectives) | 🔨 **구현+스모크PASS, feat/#37 미커밋**(검토 후 커밋→클로드리뷰) |
 | #38 | 엔진 부품(retrieve·select·mutate·judge) | ⬜ |

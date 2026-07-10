@@ -244,6 +244,7 @@ GitHub OAuth 시작. `state`(CSRF) 세팅 후 GitHub 인가 URL 반환/리다이
 ### `GET /scans/{id}/stream?token=<jwt>` 🔒 *(SSE)* — Live Analysis Log / Current Attack / Summary
 스캔 실시간 진행. `text/event-stream`. `EventSource`가 헤더를 못 실으므로 **JWT를 `?token=` 쿼리로**.
 각 이벤트에 `id:`(=scan_events_id) 포함 → 재연결 시 `Last-Event-ID`로 놓친 구간 재생.
+전송 = scan_events DB 폴링(?after=scan_events_id). 응답 text/event-stream, 각 이벤트 id=scan_events_id로 Last-Event-ID 복구.
 - 화면 매핑: `log`→**Live Analysis Log**, `progress`→**Progress바 + Current Attack + Summary**, `finding`→Top Findings, `done`→완료.
 ```
 id: 47
