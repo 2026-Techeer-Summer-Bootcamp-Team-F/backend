@@ -89,7 +89,39 @@ def _const_str(node):
 
 
 def _grep(hints, text_low) -> list:
-    return sorted({h for h in hints if h in text_low})
+    # 단어형 힌트(rag 등)는 '앞 경계'를 요구해 오탐 방지(rag ⊂ sto"rag"e). 앞 경계만 두므로
+    # 스템 매칭은 유지 — retriev→retrieval, refus→refuses 같은 접두 일치는 그대로 잡힌다.
+    # 특수문자 포함 힌트(.pdf·loader( 등)는 부분일치 유지.
+    out = set()
+    for h in hints:
+        if h.replace("_", "").isalnum():
+            if re.search(r"(?<![a-z0-9])" + re.escape(h), text_low):
+                out.add(h)
+        elif h in text_low:
+            out.add(h)
+    return sorted(out)
+
+
+_ALLOWED_BASE = Path.cwd().resolve()   # 컨테이너 작업 디렉터리(=/app). 이 밖은 못 읽음.
+
+
+def _read_source(source_path: str):
+    """config.source_path를 승인된 작업 디렉터리 안으로 제한해 읽는다.
+
+    경로 탈출(`../`)·절대경로로 `/etc/passwd` 같은 임의 파일을 읽는 것을 막는다(정찰은
+    사용자 config를 그대로 받으므로). 밖이거나 못 읽으면 None → 등록입력만으로 폴백.
+    """
+    try:
+        base = _ALLOWED_BASE
+        p = Path(source_path)
+        p = (p if p.is_absolute() else base / p).resolve()
+        if base != p and base not in p.parents:
+            log.warning("recon: source_path가 허용 디렉터리 밖 — 무시: %s", source_path)
+            return None
+        return p.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        log.warning("recon: source_path 못 읽음: %s", source_path)
+        return None
 
 
 def profile_target(target, source=None) -> dict:
@@ -101,10 +133,7 @@ def profile_target(target, source=None) -> dict:
     src = source
     cfg = getattr(target, "config", None) or {}
     if src is None and cfg.get("source_path"):
-        try:
-            src = Path(cfg["source_path"]).read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            log.warning("recon: source_path 못 읽음: %s", cfg.get("source_path"))
+        src = _read_source(cfg["source_path"])
 
     if src is None:
         # 리포 코드 없음(repo 스코프 미보유 등) → 등록입력만(블랙박스는 후속)

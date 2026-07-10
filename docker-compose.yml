@@ -1,7 +1,7 @@
 # AI 레드팀 백엔드 로컬 개발 — ARCHITECTURE.md §1
 # 실행: docker compose up --build   →  API http://localhost:8000/health
 # 아키텍처(2026-07-10): 브로커=RabbitMQ, Redis=캐시·rate-limit·result, SSE=Postgres 폴링.
-# UI: Swagger :8000/docs · RabbitMQ :15672 · Jaeger :16686 · Grafana :3000 · Prometheus :9090
+# UI: Swagger :8000/docs · RabbitMQ :15672 · Jaeger :16686 · Grafana :3001 · Prometheus :9091
 services:
   db:
     image: pgvector/pgvector:pg16          # postgres + pgvector(벡터검색)
@@ -119,6 +119,7 @@ services:
     command: ["-config.file=/etc/loki/loki-config.yml"]
     volumes:
       - ./ops/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki          # 청크/인덱스 영속(재시작 시 로그 유지)
     ports:
       - "3100:3100"
 
@@ -148,3 +149,4 @@ services:
 volumes:
   pgdata:
   grafana_data:
+  loki_data:

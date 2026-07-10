@@ -100,10 +100,12 @@ async def scan_events(scan_id: int, after: int = 0):
     """
     MAX_IDLE = 300  # 새 이벤트 없이 5분(=300×1s) 지나면 스트림 닫음
 
-    # 연결 시 스캔 존재 확인(없으면 404) — 없는 스캔을 5분간 폴링하며 매달리지 않도록
-    with SessionLocal() as db0:
-        if db0.get(Scan, scan_id) is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "스캔 없음")
+    # 연결 시 스캔 존재 확인(없으면 404). 동기 DB 조회는 to_thread로 빼 이벤트루프를 막지 않음.
+    def _exists():
+        with SessionLocal() as db0:
+            return db0.get(Scan, scan_id) is not None
+    if not await asyncio.to_thread(_exists):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "스캔 없음")
 
     def _poll(after_id: int):
         # 동기 DB 조회(이벤트 목록 + 종료여부). asyncio.to_thread로 실행해 이벤트루프를 막지 않음.

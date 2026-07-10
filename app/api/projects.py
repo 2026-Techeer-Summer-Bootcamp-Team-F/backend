@@ -97,15 +97,18 @@ def save_actor(target_id: int, body: ActorSaveIn,
 
 
 @router.post("/projects/{target_id}/recon")
-def recon(target_id: int, db: Session = Depends(get_db)):
+def recon(target_id: int, db: Session = Depends(get_db),
+          user: User = Depends(get_current_user)):
     """정찰 실행 → target_projects.model/defences/tools/rag_sources 갱신. recon.py 호출.
 
     코드 소스는 config.source_path(로컬) 우선, 없으면 등록입력만. repo fetch는 팀원 auth 대기.
-    TODO(auth): 소유권 검증은 팀원 JWT 완성 후(지금은 표적 존재만 확인).
+    save_actor와 동일하게 인증+소유권 검증(본인 프로젝트만).
     """
     target = db.get(TargetProject, target_id)
     if target is None or target.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "프로젝트 없음")
+    if target.user_id != user.user_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "본인 프로젝트만 정찰 가능")
     profile = profile_target(target)
     target.model = profile["model"] or target.model
     if profile["system_prompt"]:
