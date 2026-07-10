@@ -51,17 +51,21 @@ def report(scan_id: int, db: Session = Depends(get_db)):
         sev_counts[sev] = sev_counts.get(sev, 0) + 1
         risk += _SEV_WEIGHT.get(sev, 5)
     total = len(objs)
+    # 응답 형태 = API-명세 §5 + 프론트 ScanReport (top-level 파생값 + stats{}).
+    # report_id는 scan_reports 스냅샷 테이블을 안 써서 파생(on-the-fly) → null.
     return {
-        "scan_id": scan_id, "status": scan.status,
-        "stats": {
-            "risk_score": float(min(100, risk)),
-            "total_objectives": total,
-            "breached_objectives": breached_objs,
-            "coverage_pct": round(breached_objs / total * 100, 1) if total else 0.0,
+        "report_id": None,
+        "scan_id": scan_id,
+        "status": scan.status,
+        "total_objectives": total,
+        "breached_count": breached_objs,                          # 뚫린 '목표' 수
+        "coverage_pct": round(breached_objs / total * 100, 1) if total else 0.0,
+        "severity_counts": sev_counts,
+        "risk_score": float(min(100, risk)),
+        "stats": {                                                # 대시보드 큰 숫자용
             "total_attempts": len(attempts),
-            "breached_attempts": sum(1 for a in attempts if a.breached),
-            "findings_count": len(findings),
-            "severity_counts": sev_counts,
+            "breached_attempts": sum(1 for a in attempts if a.breached),  # 뚫린 '시도' 수
+            "findings": len(findings),
         },
     }
 
@@ -119,17 +123,17 @@ def findings(scan_id: int, db: Session = Depends(get_db)):
     return out
 
 
-def _build_summary(scan, stats, finds_detail) -> dict:
+def _build_summary(scan, rep, finds_detail) -> dict:
     """스캔 결과 요약. 키 없으면 템플릿, ANTHROPIC_API_KEY 있으면 Haiku로 자연어 요약."""
-    breached = stats["breached_objectives"]
-    total = stats["total_objectives"]
+    st = rep["stats"]
     techniques = ", ".join(sorted({f["technique_name"] or f["atlas_technique_id"]
                                    for f in finds_detail})) or "없음"
     template = (
-        f"스캔 #{scan.scan_id} 결과: 공격 목표 {total}개 중 {breached}개가 침투에 성공했습니다"
-        f"(커버리지 {stats['coverage_pct']}%, 위험도 {stats['risk_score']}/100). "
-        f"총 {stats['total_attempts']}회 시도 중 {stats['breached_attempts']}회가 방어를 뚫었고, "
-        f"취약점 {stats['findings_count']}건이 확인됐습니다. 침투 기법: {techniques}.")
+        f"스캔 #{scan.scan_id} 결과: 공격 목표 {rep['total_objectives']}개 중 "
+        f"{rep['breached_count']}개가 침투에 성공했습니다"
+        f"(커버리지 {rep['coverage_pct']}%, 위험도 {rep['risk_score']}/100). "
+        f"총 {st['total_attempts']}회 시도 중 {st['breached_attempts']}회가 방어를 뚫었고, "
+        f"취약점 {st['findings']}건이 확인됐습니다. 침투 기법: {techniques}.")
 
     key = settings.anthropic_api_key
     if not key:
@@ -154,4 +158,4 @@ def ai_summary(scan_id: int, db: Session = Depends(get_db)):
     scan = _scan_or_404(db, scan_id)
     rep = report(scan_id, db)
     finds = findings(scan_id, db)
-    return {"scan_id": scan_id, **_build_summary(scan, rep["stats"], finds)}
+    return {"scan_id": scan_id, **_build_summary(scan, rep, finds)}
