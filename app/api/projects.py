@@ -12,7 +12,7 @@ from ..db import get_db
 from ..deps import get_current_user
 from ..models import TargetProject, User
 from ..recon import profile_target
-from ..schemas import ActorSaveIn
+from ..schemas import ActorSaveIn, ProjectCreateIn
 from ..security import decrypt_token
 
 router = APIRouter(tags=["projects"])
@@ -107,9 +107,27 @@ def github_repos(q: str = "", page: int = 1,
 
 
 @router.post("/projects", status_code=201)
-def create_project():
-    """레포 선택 → 동의+액터설정 등록. TODO"""
-    return {"target_id": 0}
+def create_project(body: ProjectCreateIn, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """대상 앱 등록 — 동의 후 '액터 정보 작성' 화면에서 제출(§3, 기능명세 ④).
+
+    actor_type을 config에 병합 저장(별도 컬럼 없음). 정찰 필드
+    (model/defences/tools/rag_sources)는 비운 채 생성 → 이후 recon으로 채움.
+    config 상세검증은 느슨(등록 시엔 actor_type만 검증, url·셀렉터는 /actor에서).
+    """
+    if body.actor_type not in _VALID_ACTOR_TYPES:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"actor_type 필수 (http|browser), 받음={body.actor_type!r}")
+    config = dict(body.config or {})
+    config["actor_type"] = body.actor_type                 # config 안에 병합 저장
+    target = TargetProject(
+        user_id=user.user_id, project_name=body.project_name, config=config,
+        purpose=body.purpose or "", system_prompt=body.system_prompt or "",
+        repo_url=body.repo_url or "")
+    db.add(target)
+    db.commit()
+    db.refresh(target)
+    return _project_detail(target)
 
 
 @router.get("/projects")
