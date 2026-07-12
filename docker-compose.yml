@@ -46,7 +46,7 @@ services:
   backend:
     build: .
     environment:
-      DATABASE_URL: postgresql+psycopg://redteam:redteam@db:5432/redteam
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://redteam:redteam@db:5432/redteam}
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
       REDIS_URL: redis://redis:6379/0
       AUTH_MODE: ${AUTH_MODE:-mock}
@@ -72,7 +72,7 @@ services:
     build: .
     command: ["celery", "-A", "app.celery_app", "worker", "--loglevel=info"]
     environment:
-      DATABASE_URL: postgresql+psycopg://redteam:redteam@db:5432/redteam
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://redteam:redteam@db:5432/redteam}
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
       REDIS_URL: redis://redis:6379/0
       AUTH_MODE: ${AUTH_MODE:-mock}
