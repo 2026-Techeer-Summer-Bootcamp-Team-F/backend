@@ -12,7 +12,7 @@ from ..db import get_db
 from ..deps import get_current_user
 from ..models import TargetProject, User
 from ..recon import profile_target
-from ..schemas import ActorSaveIn, ProjectCreateIn
+from ..schemas import ActorSaveIn, ProjectCreateIn, ProjectUpdateIn
 from ..security import decrypt_token
 
 router = APIRouter(tags=["projects"])
@@ -150,9 +150,27 @@ def get_project(target_id: int, db: Session = Depends(get_db),
 
 
 @router.patch("/projects/{target_id}")
-def update_project(target_id: int):
-    """config·purpose·system_prompt 등 수정. TODO"""
-    return {"target_id": target_id}
+def update_project(target_id: int, body: ProjectUpdateIn,
+                   db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """프로젝트 부분 수정 — 전달된 필드만 반영(§3). 없음=404 / 타인=403.
+
+    config는 통째 교체(부분 병합 아님). 미전달 필드는 기존값 보존.
+    """
+    target = _owned_or_error(db, target_id, user)
+    if body.project_name is not None:
+        target.project_name = body.project_name
+    if body.config is not None:
+        target.config = body.config
+    if body.purpose is not None:
+        target.purpose = body.purpose
+    if body.system_prompt is not None:
+        target.system_prompt = body.system_prompt
+    if body.repo_url is not None:
+        target.repo_url = body.repo_url
+    db.commit()
+    db.refresh(target)
+    return _project_detail(target)
 
 
 @router.delete("/projects/{target_id}", status_code=204)
