@@ -131,15 +131,22 @@ def create_project(body: ProjectCreateIn, db: Session = Depends(get_db),
 
 
 @router.get("/projects")
-def list_projects():
-    """등록된 내 프로젝트(대시보드 좌측). TODO"""
-    return []
+def list_projects(db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """등록된 내 프로젝트 목록(대시보드 좌측). soft-deleted 제외, 응답 {data:[...]}."""
+    rows = (db.query(TargetProject)
+              .filter(TargetProject.user_id == user.user_id,
+                      TargetProject.deleted_at.is_(None))
+              .order_by(TargetProject.created_at.desc())
+              .all())
+    return {"data": [_project_list_item(t) for t in rows]}
 
 
 @router.get("/projects/{target_id}")
-def get_project(target_id: int):
-    """프로젝트 단건 조회. TODO"""
-    return {"target_id": target_id}
+def get_project(target_id: int, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    """프로젝트 단건 조회 — 본인 소유만(§3). 없음=404 / 타인=403."""
+    return _project_detail(_owned_or_error(db, target_id, user))
 
 
 @router.patch("/projects/{target_id}")
