@@ -19,6 +19,21 @@ router = APIRouter(prefix="/scans", tags=["results"])
 _SEV_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 5}
 
 
+def _heat_status(status: str) -> str:
+    """objective status → 프론트 히트맵 enum(breached|safe|untested).
+
+    프론트 계약(scans.ts HeatmapTechnique)은 3값만 씀:
+    - breached : 뚫림
+    - untested : 아직 공격 안 함(pending/running)
+    - safe     : 공격했으나 안 뚫림(safe/exhausted/failed)
+    """
+    if status == "breached":
+        return "breached"
+    if status in ("pending", "running"):
+        return "untested"
+    return "safe"
+
+
 def _scan_or_404(db: Session, scan_id: int) -> Scan:
     scan = db.get(Scan, scan_id)
     if scan is None:
@@ -75,10 +90,12 @@ def heatmap(scan_id: int, db: Session = Depends(get_db)):
     """ATLAS 기법별 침투 히트맵 — objective별 상태 + 최고 fitness. — §5"""
     _scan_or_404(db, scan_id)
     objs, attempts, _ = _collect(db, scan_id)
-    # objective별 최고 fitness
+    # objective별 최고 fitness + 시도 횟수
     best: dict = {}
+    att_count: dict = {}
     for a in attempts:
         best[a.objective_id] = max(best.get(a.objective_id, 0.0), a.fitness or 0.0)
+        att_count[a.objective_id] = att_count.get(a.objective_id, 0) + 1
     cells = []
     for o in objs:
         tech = db.get(AtlasTechnique, o.atlas_technique_id)
@@ -86,8 +103,9 @@ def heatmap(scan_id: int, db: Session = Depends(get_db)):
             "atlas_technique_id": o.atlas_technique_id,
             "name": tech.name if tech else o.atlas_technique_id,
             "tactic": tech.tactic if tech else "",
-            "status": o.status,
+            "status": _heat_status(o.status),                # 프론트 enum(breached|safe|untested)
             "breached": o.status == "breached",
+            "attempts": att_count.get(o.objective_id, 0),    # 프론트 계약: objective별 시도 횟수
             "best_score": round(best.get(o.objective_id, 0.0), 3),
         })
     return {"scan_id": scan_id, "cells": cells}
@@ -108,8 +126,11 @@ def findings(scan_id: int, db: Session = Depends(get_db)):
             evidence = json.loads(f.evidence) if f.evidence else {}
         except (ValueError, TypeError):
             evidence = {"raw": f.evidence}
+        tech_label = tech.name if tech else (obj.atlas_technique_id if obj else "취약점")
         out.append({
             "findings_id": f.findings_id,
+            "objective_id": obj.objective_id if obj else None,   # 프론트 계약
+            "title": f"{tech_label} 침투 · {f.severity}",         # 프론트 계약(기법+심각도 파생)
             "severity": f.severity,
             "atlas_technique_id": obj.atlas_technique_id if obj else None,
             "technique_name": tech.name if tech else None,
