@@ -91,6 +91,9 @@ def main():
         # actor_type 무효 → 422 (느슨한 등록: 그래도 actor_type 값 검증)
         r = client.post("/projects", json={"project_name": "smoke-proj-x", "actor_type": "ftp"})
         check("actor_type 무효 → 422", r.status_code == 422)
+        # 빈 project_name → 422
+        r = client.post("/projects", json={"project_name": "", "actor_type": "http"})
+        check("빈 project_name → 422", r.status_code == 422)
 
         # 두 번째 프로젝트(목록/삭제 검증용)
         r = client.post("/projects", json={"project_name": "smoke-proj-b", "actor_type": "browser",
@@ -119,6 +122,10 @@ def main():
         check("수정 200", r.status_code == 200)
         check("수정 purpose 반영", r.json().get("purpose") == "변경된 용도")
         check("수정 project_name 보존", r.json().get("project_name") == "smoke-proj-a")
+        # config만 갱신해도 actor_type 소실 안 됨(config 안에만 있으므로 승계)
+        r = client.patch(f"/projects/{tid_a}", json={"config": {"url": "http://new/chat"}})
+        check("config 교체 후 actor_type 보존", r.json().get("actor_type") == "http")
+        check("config 교체 반영", r.json().get("config", {}).get("url") == "http://new/chat")
 
         # --- DELETE /projects/{id} (soft-delete) ---
         r = client.delete(f"/projects/{tid_b}")

@@ -161,7 +161,10 @@ def update_project(target_id: int, body: ProjectUpdateIn,
     if body.project_name is not None:
         target.project_name = body.project_name
     if body.config is not None:
-        target.config = body.config
+        new_config = dict(body.config)                    # actor_type는 config 안에만 있음
+        new_config.setdefault("actor_type",               # 요청이 생략하면 기존값 승계(소실 방지)
+                              (target.config or {}).get("actor_type", ""))
+        target.config = new_config
     if body.purpose is not None:
         target.purpose = body.purpose
     if body.system_prompt is not None:
