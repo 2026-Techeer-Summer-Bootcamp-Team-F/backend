@@ -10,9 +10,9 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import get_current_user
-from ..models import TargetProject, User
+from ..models import TargetProject, User, _now
 from ..recon import profile_target
-from ..schemas import ActorSaveIn
+from ..schemas import ActorSaveIn, ProjectCreateIn, ProjectUpdateIn
 from ..security import decrypt_token
 
 router = APIRouter(tags=["projects"])
@@ -37,6 +37,34 @@ def _project_out(t: TargetProject) -> dict:
     return {"target_id": t.target_id, "project_name": t.project_name,
             "actor_type": (t.config or {}).get("actor_type", ""),
             "config": t.config or {}, "system_prompt": t.system_prompt, "model": t.model}
+
+
+def _project_detail(t: TargetProject) -> dict:
+    """상세/등록/수정 응답 — Project 전체 필드(§3 Project 스키마)."""
+    return {"target_id": t.target_id, "project_name": t.project_name,
+            "actor_type": (t.config or {}).get("actor_type", ""),
+            "config": t.config or {}, "purpose": t.purpose,
+            "system_prompt": t.system_prompt, "repo_url": t.repo_url,
+            "model": t.model, "defences": t.defences or {},
+            "tools": t.tools or {}, "rag_sources": t.rag_sources or {},
+            "created_at": t.created_at}
+
+
+def _project_list_item(t: TargetProject) -> dict:
+    """목록 응답 — 대시보드 좌측용 축약 필드."""
+    return {"target_id": t.target_id, "project_name": t.project_name,
+            "actor_type": (t.config or {}).get("actor_type", ""),
+            "model": t.model, "repo_url": t.repo_url, "created_at": t.created_at}
+
+
+def _owned_or_error(db: Session, target_id: int, user: User) -> TargetProject:
+    """소유 프로젝트 조회 — 없음/삭제됨=404, 타인=403. (§3 소유권 규칙)"""
+    target = db.get(TargetProject, target_id)
+    if target is None or target.deleted_at is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "프로젝트 없음")
+    if target.user_id != user.user_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "본인 프로젝트만 접근 가능")
+    return target
 
 
 @router.get("/github/repos")
@@ -79,32 +107,86 @@ def github_repos(q: str = "", page: int = 1,
 
 
 @router.post("/projects", status_code=201)
-def create_project():
-    """레포 선택 → 동의+액터설정 등록. TODO"""
-    return {"target_id": 0}
+def create_project(body: ProjectCreateIn, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """대상 앱 등록 — 동의 후 '액터 정보 작성' 화면에서 제출(§3, 기능명세 ④).
+
+    actor_type을 config에 병합 저장(별도 컬럼 없음). 정찰 필드
+    (model/defences/tools/rag_sources)는 비운 채 생성 → 이후 recon으로 채움.
+    config 상세검증은 느슨(등록 시엔 actor_type만 검증, url·셀렉터는 /actor에서).
+    """
+    if body.actor_type not in _VALID_ACTOR_TYPES:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"actor_type 필수 (http|browser), 받음={body.actor_type!r}")
+    config = dict(body.config or {})
+    config["actor_type"] = body.actor_type                 # config 안에 병합 저장
+    target = TargetProject(
+        user_id=user.user_id, project_name=body.project_name, config=config,
+        purpose=body.purpose or "", system_prompt=body.system_prompt or "",
+        repo_url=body.repo_url or "")
+    db.add(target)
+    db.commit()
+    db.refresh(target)
+    return _project_detail(target)
 
 
 @router.get("/projects")
-def list_projects():
-    """등록된 내 프로젝트(대시보드 좌측). TODO"""
-    return []
+def list_projects(db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """등록된 내 프로젝트 목록(대시보드 좌측). soft-deleted 제외, 응답 {data:[...]}."""
+    rows = (db.query(TargetProject)
+              .filter(TargetProject.user_id == user.user_id,
+                      TargetProject.deleted_at.is_(None))
+              .order_by(TargetProject.created_at.desc())
+              .all())
+    return {"data": [_project_list_item(t) for t in rows]}
 
 
 @router.get("/projects/{target_id}")
-def get_project(target_id: int):
-    """프로젝트 단건 조회. TODO"""
-    return {"target_id": target_id}
+def get_project(target_id: int, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    """프로젝트 단건 조회 — 본인 소유만(§3). 없음=404 / 타인=403."""
+    return _project_detail(_owned_or_error(db, target_id, user))
 
 
 @router.patch("/projects/{target_id}")
-def update_project(target_id: int):
-    """config·purpose·system_prompt 등 수정. TODO"""
-    return {"target_id": target_id}
+def update_project(target_id: int, body: ProjectUpdateIn,
+                   db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """프로젝트 부분 수정 — 전달된 필드만 반영(§3). 없음=404 / 타인=403.
+
+    config는 통째 교체(부분 병합 아님). 미전달 필드는 기존값 보존.
+    """
+    target = _owned_or_error(db, target_id, user)
+    if body.project_name is not None:
+        target.project_name = body.project_name
+    if body.config is not None:
+        new_config = dict(body.config)                    # actor_type는 config 안에만 있음
+        at = new_config.get("actor_type")
+        if at is not None and at not in _VALID_ACTOR_TYPES:  # 명시 값이면 POST·save_actor와 동일 검증
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                f"actor_type 필수 (http|browser), 받음={at!r}")
+        new_config.setdefault("actor_type",               # 생략 시엔 기존값 승계(소실 방지)
+                              (target.config or {}).get("actor_type", ""))
+        target.config = new_config
+    if body.purpose is not None:
+        target.purpose = body.purpose
+    if body.system_prompt is not None:
+        target.system_prompt = body.system_prompt
+    if body.repo_url is not None:
+        target.repo_url = body.repo_url
+    db.commit()
+    db.refresh(target)
+    return _project_detail(target)
 
 
 @router.delete("/projects/{target_id}", status_code=204)
-def delete_project(target_id: int):
-    """등록 해제(soft-delete). TODO"""
+def delete_project(target_id: int, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """등록 해제(soft-delete) — deleted_at 세팅(§3, 기능명세: 삭제=등록해제)."""
+    target = _owned_or_error(db, target_id, user)
+    target.deleted_at = _now()
+    db.commit()
     return None
 
 
