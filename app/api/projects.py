@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import get_current_user
-from ..models import TargetProject, User
+from ..models import TargetProject, User, _now
 from ..recon import profile_target
 from ..schemas import ActorSaveIn, ProjectCreateIn, ProjectUpdateIn
 from ..security import decrypt_token
@@ -174,8 +174,12 @@ def update_project(target_id: int, body: ProjectUpdateIn,
 
 
 @router.delete("/projects/{target_id}", status_code=204)
-def delete_project(target_id: int):
-    """등록 해제(soft-delete). TODO"""
+def delete_project(target_id: int, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """등록 해제(soft-delete) — deleted_at 세팅(§3, 기능명세: 삭제=등록해제)."""
+    target = _owned_or_error(db, target_id, user)
+    target.deleted_at = _now()
+    db.commit()
     return None
 
 
