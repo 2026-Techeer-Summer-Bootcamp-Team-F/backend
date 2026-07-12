@@ -162,7 +162,11 @@ def update_project(target_id: int, body: ProjectUpdateIn,
         target.project_name = body.project_name
     if body.config is not None:
         new_config = dict(body.config)                    # actor_type는 config 안에만 있음
-        new_config.setdefault("actor_type",               # 요청이 생략하면 기존값 승계(소실 방지)
+        at = new_config.get("actor_type")
+        if at is not None and at not in _VALID_ACTOR_TYPES:  # 명시 값이면 POST·save_actor와 동일 검증
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                f"actor_type 필수 (http|browser), 받음={at!r}")
+        new_config.setdefault("actor_type",               # 생략 시엔 기존값 승계(소실 방지)
                               (target.config or {}).get("actor_type", ""))
         target.config = new_config
     if body.purpose is not None:

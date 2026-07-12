@@ -126,6 +126,9 @@ def main():
         r = client.patch(f"/projects/{tid_a}", json={"config": {"url": "http://new/chat"}})
         check("config 교체 후 actor_type 보존", r.json().get("actor_type") == "http")
         check("config 교체 반영", r.json().get("config", {}).get("url") == "http://new/chat")
+        # config에 잘못된 actor_type 명시 → 422 (POST·save_actor와 동일 검증)
+        r = client.patch(f"/projects/{tid_a}", json={"config": {"actor_type": "ftp"}})
+        check("PATCH actor_type 무효 → 422", r.status_code == 422)
 
         # --- DELETE /projects/{id} (soft-delete) ---
         r = client.delete(f"/projects/{tid_b}")
