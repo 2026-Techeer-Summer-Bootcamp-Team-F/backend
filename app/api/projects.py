@@ -39,6 +39,34 @@ def _project_out(t: TargetProject) -> dict:
             "config": t.config or {}, "system_prompt": t.system_prompt, "model": t.model}
 
 
+def _project_detail(t: TargetProject) -> dict:
+    """상세/등록/수정 응답 — Project 전체 필드(§3 Project 스키마)."""
+    return {"target_id": t.target_id, "project_name": t.project_name,
+            "actor_type": (t.config or {}).get("actor_type", ""),
+            "config": t.config or {}, "purpose": t.purpose,
+            "system_prompt": t.system_prompt, "repo_url": t.repo_url,
+            "model": t.model, "defences": t.defences or {},
+            "tools": t.tools or {}, "rag_sources": t.rag_sources or {},
+            "created_at": t.created_at}
+
+
+def _project_list_item(t: TargetProject) -> dict:
+    """목록 응답 — 대시보드 좌측용 축약 필드."""
+    return {"target_id": t.target_id, "project_name": t.project_name,
+            "actor_type": (t.config or {}).get("actor_type", ""),
+            "model": t.model, "repo_url": t.repo_url, "created_at": t.created_at}
+
+
+def _owned_or_error(db: Session, target_id: int, user: User) -> TargetProject:
+    """소유 프로젝트 조회 — 없음/삭제됨=404, 타인=403. (§3 소유권 규칙)"""
+    target = db.get(TargetProject, target_id)
+    if target is None or target.deleted_at is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "프로젝트 없음")
+    if target.user_id != user.user_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "본인 프로젝트만 접근 가능")
+    return target
+
+
 @router.get("/github/repos")
 def github_repos(q: str = "", page: int = 1,
                  user: User = Depends(get_current_user)):
