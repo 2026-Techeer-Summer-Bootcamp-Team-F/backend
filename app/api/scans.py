@@ -7,13 +7,25 @@ POST /scans 는 Scan 생성 + objectives 저장 + tasks.run_scan 을 Celery 로 
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import select as sa_select
 from sqlalchemy.orm import Session
 
 from ..db import SessionLocal, get_db
-from ..models import AtlasTechnique, Objective, Scan, ScanEvent, TargetProject
+from ..deps import get_current_user
+from ..models import (
+    AtlasTechnique,
+    Attempt,
+    Finding,
+    Objective,
+    Scan,
+    ScanEvent,
+    ScanReport,
+    TargetProject,
+    User,
+)
 from ..recon import attack_types_to_atlas
 from ..schemas import ScanCreate
 from ..tasks import run_scan
@@ -87,6 +99,116 @@ def get_scan(scan_id: int, db: Session = Depends(get_db)):
                         "atlas_technique_id": o.atlas_technique_id,
                         "status": o.status} for o in objectives],
     }
+
+@router.delete("/{scan_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_scan(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """과거 스캔 기록 삭제.
+
+    - 스캔이 없으면 404
+    - 다른 사용자의 스캔이면 403
+    - pending/running 상태이면 403
+    - 완료된 스캔은 관련 기록까지 삭제하고 204 반환
+    """
+    scan = db.get(Scan, scan_id)
+
+    if scan is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="스캔 없음",
+        )
+
+    # Scan에는 user_id가 없으므로 프로젝트를 통해 소유권 확인
+    target = db.get(TargetProject, scan.target_id)
+
+    if target is None or target.deleted_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="프로젝트 없음",
+        )
+
+    if target.user_id != user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="본인 프로젝트의 스캔만 삭제할 수 있습니다.",
+        )
+
+    # 진행 중인 스캔은 삭제 금지
+    if scan.status in ("pending", "running"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="실행 중인 스캔은 삭제할 수 없습니다.",
+        )
+
+    try:
+        # 스캔에 연결된 공격 목표 ID 조회
+        objective_ids = db.scalars(
+            sa_select(Objective.objective_id).where(
+                Objective.scan_id == scan_id
+            )
+        ).all()
+
+        if objective_ids:
+            # 목표에 연결된 공격 시도 ID 조회
+            attempt_ids = db.scalars(
+                sa_select(Attempt.attempt_id).where(
+                    Attempt.objective_id.in_(objective_ids)
+                )
+            ).all()
+
+            if attempt_ids:
+                # 취약점 기록 삭제
+                db.execute(
+                    sa_delete(Finding).where(
+                        Finding.attempt_id.in_(attempt_ids)
+                    )
+                )
+
+                # 공격 시도 삭제
+                db.execute(
+                    sa_delete(Attempt).where(
+                        Attempt.attempt_id.in_(attempt_ids)
+                    )
+                )
+
+            # 공격 목표 삭제
+            db.execute(
+                sa_delete(Objective).where(
+                    Objective.objective_id.in_(objective_ids)
+                )
+            )
+
+        # 스캔 이벤트 삭제
+        db.execute(
+            sa_delete(ScanEvent).where(
+                ScanEvent.scan_id == scan_id
+            )
+        )
+
+        # 스캔 리포트 삭제
+        db.execute(
+            sa_delete(ScanReport).where(
+                ScanReport.scan_id == scan_id
+            )
+        )
+
+        # 마지막으로 스캔 삭제
+        db.execute(
+            sa_delete(Scan).where(
+                Scan.scan_id == scan_id
+            )
+        )
+
+        db.commit()
+
+    except Exception:
+        db.rollback()
+        raise
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{scan_id}/cancel")
