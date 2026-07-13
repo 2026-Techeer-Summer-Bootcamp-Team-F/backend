@@ -12,6 +12,7 @@ model·system_prompt·tools·defenses·rag_sources. 이 프로파일 → 공격�
 import ast
 import logging
 import re
+import time
 from pathlib import Path
 
 log = logging.getLogger("redteam.recon")
@@ -346,8 +347,9 @@ def fetch_repo_sources(repo_url, token=None, max_files=8, max_bytes=120_000):
     if token:
         headers["Authorization"] = f"Bearer {token}"
     out = {}
+    deadline = time.monotonic() + 15   # 감지 휴리스틱 전체 상한(워커 장시간 점유 방지)
     try:
-        with httpx.Client(timeout=10, headers=headers) as client:
+        with httpx.Client(timeout=8, headers=headers) as client:
             info = client.get(f"https://api.github.com/repos/{owner}/{repo}")
             if info.status_code != 200:
                 return {}
@@ -371,6 +373,8 @@ def fetch_repo_sources(repo_url, token=None, max_files=8, max_bytes=120_000):
                 return s
 
             for p in sorted([p for p in paths if score(p) > 0], key=score, reverse=True)[:max_files]:
+                if time.monotonic() > deadline:   # 전체 deadline 초과 시 가진 것만 반환
+                    break
                 c = client.get(f"https://api.github.com/repos/{owner}/{repo}/contents/{p}",
                                params={"ref": branch})
                 if c.status_code != 200:
