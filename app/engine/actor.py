@@ -10,7 +10,9 @@
 """
 import asyncio
 import json
+import os
 import random
+import re
 
 import httpx
 
@@ -31,7 +33,11 @@ class HttpActor(Actor):
               delay, max_retries}"""
 
     def __init__(self, config: dict, cache_key: str = "", transport=None):
-        self.url = config["url"]
+        self.url = config["url"].strip()  # 끝/앞 공백 방어(URL 오타 → /chat%20 404 방지)
+        # 스캐너가 도커 안이면 표적의 localhost는 '호스트'를 뜻함 → host.docker.internal 로 자동 변환
+        # (사용자가 localhost:8100 을 그대로 넣어도 컨테이너에서 호스트 표적에 닿게 함)
+        if os.path.exists("/.dockerenv"):
+            self.url = re.sub(r"://(localhost|127\.0\.0\.1)\b", "://host.docker.internal", self.url)
         self._transport = transport  # 테스트용 httpx MockTransport 주입 훅(운영은 None)
         self.method = config.get("method", "POST").upper()
         self.headers = config.get("headers", {"Content-Type": "application/json"})
@@ -52,14 +58,23 @@ class HttpActor(Actor):
         return self.body_template.replace("{{prompt}}", safe)
 
     def _extract(self, data) -> str:
-        # response_path(dot-path)로 응답 답변 위치 추출. 경로 어긋나면 원본 일부 반환.
+        # response_path로 응답 답변 위치 추출. JSONPath-lite 지원:
+        #   dict키(reply·message.content) + 리스트인덱스(choices[0]·choices.0)
+        #   + 선택적 '$.' 접두(garak 방식: $.choices[0].message.content).
+        # 경로 어긋나면 원본 일부 반환(폴백).
+        path = (self.response_path or "").strip().lstrip("$").lstrip(".")
+        if not path:
+            return data if isinstance(data, str) else json.dumps(data)[:2000]
         cur = data
-        for key in self.response_path.split("."):
-            if isinstance(cur, dict) and key in cur:
-                cur = cur[key]
+        for tok in re.findall(r"[^.\[\]]+|\[\d+\]", path):
+            idx = int(tok[1:-1]) if tok[0] == "[" else (int(tok) if tok.isdigit() else None)
+            if idx is not None and isinstance(cur, list) and -len(cur) <= idx < len(cur):
+                cur = cur[idx]
+            elif isinstance(cur, dict) and tok in cur:
+                cur = cur[tok]
             else:
                 return json.dumps(data)[:2000]
-        return str(cur)
+        return cur if isinstance(cur, str) else str(cur)
 
     def _extract_session(self, resp: httpx.Response):
         """응답에서 세션ID 추출(session_source: header|cookie|body + session_path)."""

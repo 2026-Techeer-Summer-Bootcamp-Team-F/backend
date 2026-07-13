@@ -4,6 +4,8 @@
 `POST /projects/{id}/actor`(액터 구성 저장)는 엔진(사용자) 스코프 — 스캔이 읽을
 config 스키마를 정의하는 쪽이라 여기서 구현. 소유권 검증은 get_current_user(팀원 auth) 의존.
 """
+import os
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -11,8 +13,8 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..deps import get_current_user
 from ..models import TargetProject, User, _now
-from ..recon import profile_target
-from ..schemas import ActorSaveIn, ProjectCreateIn, ProjectUpdateIn
+from ..recon import detect_http_contract, fetch_repo_sources, profile_target
+from ..schemas import ActorSaveIn, DetectIn, ProjectCreateIn, ProjectUpdateIn
 from ..security import decrypt_token
 
 router = APIRouter(tags=["projects"])
@@ -128,6 +130,36 @@ def create_project(body: ProjectCreateIn, db: Session = Depends(get_db),
     db.commit()
     db.refresh(target)
     return _project_detail(target)
+
+
+@router.post("/projects/detect")
+def detect_config(body: DetectIn, user: User = Depends(get_current_user)):
+    """레포에서 HTTP 연결 config 자동 감지 → 등록 폼 프리필(마찰 감소).
+
+    공개 레포는 스코프 없이 fetch(비공개는 저장 토큰). 감지는 휴리스틱이라
+    실패(fetch 불가/파싱 불가) 시 detected=false → 프론트가 프리셋·수동으로 폴백.
+    route_path는 참고용(호스트는 런타임이라 url은 사용자가 확인/입력).
+    """
+    token = decrypt_token(user.access_token_enc)
+    sources = fetch_repo_sources(body.repo_url, token) if body.repo_url else {}
+    contract = detect_http_contract(sources) if sources else None
+    if not contract:
+        return {"detected": False, "source": "none", "config": None}
+    cfg = {"actor_type": "http", "method": "POST",
+           "body_template": contract["body_template"],
+           "response_path": contract["response_path"]}
+    # URL 프리필: 사용자가 준 url 우선, 없으면 감지한 포트+경로로 추천.
+    # 호스트는 런타임이라 추정 — 스캐너가 도커면 host.docker.internal, 아니면 localhost.
+    if body.url:
+        cfg["url"] = body.url
+    elif contract.get("route_path"):
+        host = "host.docker.internal" if os.path.exists("/.dockerenv") else "localhost"
+        portpart = f":{contract['port']}" if contract.get("port") else ""
+        cfg["url"] = f"http://{host}{portpart}{contract['route_path']}"
+    return {"detected": True, "source": "repo",
+            "confidence": contract["confidence"],
+            "route_path": contract.get("route_path"),
+            "port": contract.get("port"), "config": cfg}
 
 
 @router.get("/projects")
