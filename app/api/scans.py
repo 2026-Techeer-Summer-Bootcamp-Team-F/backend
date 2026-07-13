@@ -124,7 +124,9 @@ def delete_scan(
     # Scan에는 user_id가 없으므로 프로젝트를 통해 소유권 확인
     target = db.get(TargetProject, scan.target_id)
 
-    if target is None or target.deleted_at is not None:
+    # 프로젝트 행이 아예 없을 때만 404. 소프트삭제(deleted_at)된 프로젝트라도
+    # 소유자는 과거 스캔 기록을 정리할 수 있어야 하므로 아래 소유권 검증으로 넘긴다.
+    if target is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="프로젝트 없음",
