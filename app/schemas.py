@@ -59,6 +59,16 @@ class ProjectCreateIn(BaseModel):
     repo_url: Optional[str] = None
 
 
+class DetectIn(BaseModel):
+    """POST /projects/detect — 레포에서 HTTP 연결 config 자동 감지 요청.
+
+    repo_url(공개 레포면 스코프 없이 fetch) 또는 url(참고용)만 받는다.
+    감지 실패 시 detected=false → 프론트가 프리셋/수동으로 폴백.
+    """
+    repo_url: Optional[str] = None
+    url: Optional[str] = None
+
+
 class ProjectUpdateIn(BaseModel):
     """PATCH /projects/{id} — 부분 수정. 전달된 필드만 반영(§3)."""
     project_name: Optional[str] = Field(default=None, min_length=1)

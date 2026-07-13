@@ -193,3 +193,195 @@ def profile_to_atlas(profile) -> list:
     out.append("AML.T0051.000")          # 직접 프롬프트 인젝션(기본)
     out.append("AML.T0054")              # 탈옥(우회, 기본)
     return list(dict.fromkeys(out))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HTTP 계약 자동 감지 (표적 등록 마찰 감소) — 레포 코드에서 요청필드·응답경로·라우트 추출.
+# promptfoo/garak의 "HTTP 템플릿" 패턴을 자동으로 채워주는 휴리스틱. 못 찾으면 None → 폴백.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 요청 본문 필드 후보를 뽑는 정규식 (그룹1=필드명). FastAPI/Flask/Express/stdlib 공통.
+_REQ_FIELD_PATS = [
+    re.compile(r"""\.get\(\s*["'](\w+)["']"""),        # data.get("message")
+    re.compile(r"""(?:data|body|payload|json|req\.body|request\.json)\[\s*["'](\w+)["']\s*\]"""),
+    re.compile(r"""req\.body\.(\w+)"""),               # req.body.message (express)
+    re.compile(r"""body\.(\w+)\b"""),                  # body.message (pydantic attr 접근)
+]
+# Pydantic 입력모델 첫 str 필드: class XIn(BaseModel):\n  message: str
+_PYDANTIC_FIELD = re.compile(r"class\s+\w+\((?:[\w.]*BaseModel[\w.]*)\)\s*:\s*(.*?)(?=\nclass |\Z)", re.S)
+_FIELD_DECL = re.compile(r"^\s*(\w+)\s*:\s*(?:str|Optional\[str\])", re.M)
+# 응답 키 후보: return {"reply": ...} / jsonify({"reply":...}) / res.json({reply:...})
+_RESP_KEY_PATS = [
+    re.compile(r"""(?:return|jsonify\(|json\()\s*\{\s*["'](\w+)["']\s*:"""),
+    re.compile(r"""res\.json\(\s*\{\s*(\w+)\s*:"""),   # express res.json({reply: ...})
+]
+# 라우트 경로: 데코레이터/메서드/stdlib path 비교
+_ROUTE_PATS = [
+    re.compile(r"""@\w+\.(?:post|route)\(\s*["'](/[\w/.-]*)["']"""),
+    re.compile(r"""(?:app|router)\.post\(\s*["'](/[\w/.-]*)["']"""),
+    re.compile(r"""path\s*==\s*["'](/[\w/.-]*)["']"""),   # stdlib http.server
+]
+# 실행 포트 후보(코드에서 감지 → URL 프리필용). 호스트는 런타임이라 감지 불가.
+_PORT_PATS = [
+    re.compile(r"""["']?PORT["']?\s*[,:=]\s*["']?(\d{2,5})"""),   # PORT default / "port": 8100
+    re.compile(r"""\bport\s*=\s*(\d{2,5})"""),                    # port=8100 / run(port=8100)
+    re.compile(r"""--port[=\s]+(\d{2,5})"""),                     # uvicorn --port 8000
+    re.compile(r"""\.listen\(\s*(\d{2,5})"""),                    # express listen(3000)
+]
+
+# 흔한 이름 우선순위(높을수록 선호) — 오탐 줄이려 의미있는 이름 가중.
+_REQ_PRIORITY = ["message", "prompt", "text", "input", "query", "question",
+                 "content", "user_input", "msg", "q"]
+_RESP_PRIORITY = ["reply", "response", "answer", "output", "text", "content",
+                  "message", "result", "completion"]
+_ROUTE_PRIORITY = ["/chat", "/api/chat", "/v1/chat/completions", "/message",
+                   "/query", "/ask", "/completion", "/generate"]
+
+
+def _best(cands, priority):
+    """후보(빈도순 dict) 중 우선순위 리스트 먼저, 없으면 최빈값. 없으면 None."""
+    if not cands:
+        return None
+    for p in priority:
+        if p in cands:
+            return p
+    return max(cands, key=cands.get)
+
+
+def detect_http_contract(sources):
+    """레포 소스(dict{경로:코드} 또는 문자열)에서 HTTP 요청/응답 계약 감지.
+
+    반환 dict: {request_field, response_path, route_path, body_template,
+                confidence(0~1), evidence[]}  — 아무것도 못 찾으면 None(→ 폴백).
+    """
+    code = "\n".join(sources.values()) if isinstance(sources, dict) else (sources or "")
+    if not code:
+        return None
+
+    req_counts, resp_counts, route_counts = {}, {}, {}
+    for pat in _REQ_FIELD_PATS:
+        for m in pat.findall(code):
+            req_counts[m] = req_counts.get(m, 0) + 1
+    for block in _PYDANTIC_FIELD.findall(code):       # Pydantic 첫 str 필드
+        fm = _FIELD_DECL.search(block)
+        if fm:
+            req_counts[fm.group(1)] = req_counts.get(fm.group(1), 0) + 2  # 모델 필드는 가중
+    for pat in _RESP_KEY_PATS:
+        for m in pat.findall(code):
+            resp_counts[m] = resp_counts.get(m, 0) + 1
+    # 넓은 폴백: 아무 dict 리터럴 키든 응답 우선순위 이름이면 후보로(예: _send_json(200,{"reply":..}))
+    for m in re.findall(r"""["'](\w+)["']\s*:""", code):
+        if m in _RESP_PRIORITY:
+            resp_counts[m] = resp_counts.get(m, 0) + 1
+    for pat in _ROUTE_PATS:
+        for m in pat.findall(code):
+            route_counts[m] = route_counts.get(m, 0) + 1
+
+    # 잡음 필드 제거(흔한 비-프롬프트 키)
+    for noise in ("model", "stream", "role", "temperature", "status", "error",
+                  "id", "object", "created", "usage", "choices", "messages"):
+        req_counts.pop(noise, None)
+        resp_counts.pop(noise, None)
+
+    req = _best(req_counts, _REQ_PRIORITY)
+    resp = _best(resp_counts, _RESP_PRIORITY)
+    route = _best(route_counts, _ROUTE_PRIORITY)
+    if not req and not resp:
+        return None
+
+    # 포트 감지(URL 프리필용). env 기본값 get("PORT","8100")은 실제 런타임 기본값이라
+    # 가중치 크게(주석/예시 포트 오염 방지).
+    port_counts = {}
+    for m in re.findall(r"""\.get\(\s*["']PORT["']\s*,\s*["'](\d{2,5})["']""", code):
+        port_counts[int(m)] = port_counts.get(int(m), 0) + 5
+    for pat in _PORT_PATS:
+        for m in pat.findall(code):
+            p = int(m)
+            if 1 <= p <= 65535:
+                port_counts[p] = port_counts.get(p, 0) + 1
+    port = max(port_counts, key=port_counts.get) if port_counts else None
+
+    # confidence: 요청·응답 둘 다 + 우선순위 명중이면 높음.
+    conf = 0.0
+    conf += 0.4 if req else 0.0
+    conf += 0.4 if resp else 0.0
+    conf += 0.1 if (req in _REQ_PRIORITY) else 0.0
+    conf += 0.1 if (resp in _RESP_PRIORITY) else 0.0
+
+    body_template = '{"%s": "{{prompt}}"}' % (req or "message")
+    return {
+        "request_field": req, "response_path": resp or "reply",
+        "route_path": route, "port": port, "body_template": body_template,
+        "confidence": round(conf, 2),
+        "evidence": {"request": req_counts, "response": resp_counts, "route": route_counts},
+    }
+
+
+# 레포에서 훑을 서버 후보 파일명(우선순위 순). 소수만 fetch.
+_SERVER_FILE_HINTS = ("app.py", "main.py", "server.py", "api.py", "chat.py",
+                      "server.js", "index.js", "app.js", "main.js")
+_SERVER_DIR_HINTS = ("routes", "api", "src", "app", "server")
+
+
+def _parse_repo(repo_url):
+    """https://github.com/owner/repo(.git) → (owner, repo). 아니면 (None, None)."""
+    m = re.search(r"github\.com[/:]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", repo_url or "")
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+
+def fetch_repo_sources(repo_url, token=None, max_files=8, max_bytes=120_000):
+    """GitHub 레포에서 서버 후보 소스 파일들을 fetch → dict{경로:코드}.
+
+    공개 레포는 token 없이도 가능(rate-limit). 비공개/권한없음/오류 → 빈 dict(폴백).
+    git tree(recursive)로 후보 파일 경로만 골라 contents API(raw)로 소수 fetch.
+    지연 임포트(httpx)로 순수 감지 로직 테스트엔 네트워크 의존 없음.
+    """
+    import base64
+    import httpx
+
+    owner, repo = _parse_repo(repo_url)
+    if not owner or not repo:
+        return {}
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    out = {}
+    try:
+        with httpx.Client(timeout=10, headers=headers) as client:
+            info = client.get(f"https://api.github.com/repos/{owner}/{repo}")
+            if info.status_code != 200:
+                return {}
+            branch = info.json().get("default_branch", "main")
+            tree = client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}",
+                params={"recursive": "1"})
+            if tree.status_code != 200:
+                return {}
+            paths = [n["path"] for n in tree.json().get("tree", []) if n.get("type") == "blob"]
+
+            def score(p):
+                base = p.rsplit("/", 1)[-1].lower()
+                s = 0
+                if base in _SERVER_FILE_HINTS:
+                    s += 10 - _SERVER_FILE_HINTS.index(base)
+                if any(("/" + d + "/") in ("/" + p.lower()) for d in _SERVER_DIR_HINTS):
+                    s += 2
+                if p.lower().endswith((".py", ".js", ".ts")):
+                    s += 1
+                return s
+
+            for p in sorted([p for p in paths if score(p) > 0], key=score, reverse=True)[:max_files]:
+                c = client.get(f"https://api.github.com/repos/{owner}/{repo}/contents/{p}",
+                               params={"ref": branch})
+                if c.status_code != 200:
+                    continue
+                j = c.json()
+                if j.get("encoding") == "base64" and j.get("size", 0) <= max_bytes:
+                    try:
+                        out[p] = base64.b64decode(j["content"]).decode("utf-8", "ignore")
+                    except Exception:  # noqa: BLE001
+                        pass
+    except Exception as e:  # noqa: BLE001 - 네트워크/파싱 실패 → 폴백
+        log.warning("recon: 레포 fetch 실패(%s): %s", repo_url, e)
+        return {}
+    return out
