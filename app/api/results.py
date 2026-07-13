@@ -18,6 +18,9 @@ router = APIRouter(prefix="/scans", tags=["results"])
 
 _SEV_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 5}
 
+# 히트맵 스택바용: 안 뚫린 시도 중 fitness가 이 값 이상이면 '부분(근접)', 미만이면 '방어'
+_PARTIAL_MIN = 0.5
+
 
 def _heat_status(status: str) -> str:
     """objective status → 프론트 히트맵 enum(breached|safe|untested).
@@ -93,9 +96,19 @@ def heatmap(scan_id: int, db: Session = Depends(get_db)):
     # objective별 최고 fitness + 시도 횟수
     best: dict = {}
     att_count: dict = {}
+    dist: dict = {}  # objective_id -> [defended, partial, breached] 시도 결과 분포
     for a in attempts:
-        best[a.objective_id] = max(best.get(a.objective_id, 0.0), a.fitness or 0.0)
-        att_count[a.objective_id] = att_count.get(a.objective_id, 0) + 1
+        oid = a.objective_id
+        best[oid] = max(best.get(oid, 0.0), a.fitness or 0.0)
+        att_count[oid] = att_count.get(oid, 0) + 1
+        d, p, b = dist.get(oid, (0, 0, 0))
+        if a.breached:
+            b += 1
+        elif (a.fitness or 0.0) >= _PARTIAL_MIN:
+            p += 1
+        else:
+            d += 1
+        dist[oid] = (d, p, b)
     cells = []
     for o in objs:
         tech = db.get(AtlasTechnique, o.atlas_technique_id)
@@ -107,6 +120,11 @@ def heatmap(scan_id: int, db: Session = Depends(get_db)):
             "breached": o.status == "breached",
             "attempts": att_count.get(o.objective_id, 0),    # 프론트 계약: objective별 시도 횟수
             "best_score": round(best.get(o.objective_id, 0.0), 3),
+            # 스택바용 시도 결과 분포(방어/부분/뚫림). 기존 필드 유지 → 하위호환.
+            "dist": dict(zip(
+                ("defended", "partial", "breached"),
+                dist.get(o.objective_id, (0, 0, 0)),
+            )),
         })
     return {"scan_id": scan_id, "cells": cells}
 
