@@ -6,8 +6,11 @@
   ② GitHub   → redirect_uri(?code&state)
   ③ callback(code,state) → 토큰교환 → GitHub /user → users upsert → JWT
                → 200 {access_token, token_type, user}
-  ④ logout   → 204 무상태(서버 blacklist 없음; 클라가 토큰 삭제 + 짧은 만료)
+  ④ logout   → 204 무상태(서버 blacklist 없음; 클라가 토큰 삭제 + 짧은 만료).
+               추가로 GitHub grant(인가) 자체를 취소해 재로그인 시 동의 화면을
+               다시 띄운다(silent re-auth 방지). JWT 무효화는 범위 밖(무상태 유지).
 """
+import logging
 from urllib.parse import urlencode
 
 import httpx
@@ -20,13 +23,16 @@ from ..deps import get_current_user
 from ..models import User
 from ..schemas import DevLoginIn
 from ..security import (create_access_token, create_oauth_state,
-                        encrypt_token, verify_oauth_state)
+                        decrypt_token, encrypt_token, verify_oauth_state)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN = "https://github.com/login/oauth/access_token"
 GITHUB_USER = "https://api.github.com/user"
+GITHUB_GRANT = "https://api.github.com/applications/{client_id}/grant"
 
 
 def _user_public(u: User) -> dict:
@@ -143,7 +149,52 @@ def me(user: User = Depends(get_current_user)):
             "github_name": user.github_name, "name": user.name}
 
 
+def _revoke_github_grant(access_token: str,
+                         transport: httpx.BaseTransport | None = None) -> bool:
+    """GitHub OAuth grant(인가)를 취소 — 재로그인 시 동의 화면 재노출을 유도.
+
+    `DELETE /applications/{client_id}/grant`(Basic auth=client_id:secret,
+    body={"access_token": ...})는 토큰뿐 아니라 인가 자체를 지워 silent
+    re-auth를 막는다(토큰만 지우는 .../token 과 다름 — 반드시 grant).
+
+    client_id/secret 미설정 또는 토큰이 없으면 아무 것도 하지 않고 False.
+    네트워크·응답 오류는 로그만 남기고 삼킨다(로그아웃을 막지 않음). 성공 시 True.
+    `transport`는 테스트(MockTransport) 주입용.
+    """
+    if not access_token:
+        return False
+    if not (settings.github_client_id and settings.github_client_secret):
+        logger.info("GitHub grant revoke 스킵 — client_id/secret 미설정")
+        return False
+    url = GITHUB_GRANT.format(client_id=settings.github_client_id)
+    try:
+        with httpx.Client(timeout=10, transport=transport) as client:
+            resp = client.request(
+                "DELETE", url,
+                auth=(settings.github_client_id, settings.github_client_secret),
+                headers={"Accept": "application/vnd.github+json"},
+                json={"access_token": access_token},
+            )
+    except httpx.RequestError as exc:
+        logger.warning("GitHub grant revoke 요청 실패(무시하고 로그아웃 진행): %s", exc)
+        return False
+    if resp.status_code != 204:
+        logger.warning("GitHub grant revoke 응답 비정상(status=%s) — 로그아웃은 계속",
+                       resp.status_code)
+        return False
+    return True
+
+
 @router.post("/logout", status_code=204)
-def logout(_user: User = Depends(get_current_user)):
-    """무상태 로그아웃 — 서버 상태 없음(클라가 토큰 삭제). 204 No Content."""
+def logout(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """로그아웃 — GitHub grant 취소 + 저장 토큰 삭제. 항상 204(무상태).
+
+    저장된 GitHub 토큰이 있으면 grant를 취소해 재로그인 시 동의 화면을 다시
+    띄운다. revoke 성공 여부와 무관하게 access_token_enc를 비우고 204로 마무리.
+    JWT 무효화(블랙리스트)는 범위 밖 — 클라가 토큰을 삭제한다.
+    """
+    if user.access_token_enc:
+        _revoke_github_grant(decrypt_token(user.access_token_enc))
+        user.access_token_enc = ""
+        db.commit()
     return None
