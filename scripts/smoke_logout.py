@@ -109,7 +109,9 @@ def _make_user(github_id, token_plain):
         db.commit()
         u = User(github_id=github_id, github_name="smoke",
                  access_token_enc=encrypt_token(token_plain) if token_plain else "")
-        db.add(u); db.commit(); db.refresh(u)
+        db.add(u)
+        db.commit()
+        db.refresh(u)
         return u.user_id
     finally:
         db.close()
