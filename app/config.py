@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # ── GitHub OAuth (auth_mode=github 일 때) ──
     github_client_id: str = ""
     github_client_secret: str = ""
-    github_redirect_uri: str = "http://localhost:8000/auth/github/callback"
+    github_redirect_uri: str = "http://localhost:5173/auth/callback"
     github_scope: str = "read:user repo"    # repos(비공개 포함) 조회 위해 repo 스코프
     frontend_url: str = "http://localhost:5173"
 
