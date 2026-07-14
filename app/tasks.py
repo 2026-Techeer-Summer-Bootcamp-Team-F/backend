@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, timezone
 
 from celery.exceptions import SoftTimeLimitExceeded
+from celery.signals import worker_ready
 from sqlalchemy import select as sa_select
 
 from .celery_app import celery_app
@@ -21,6 +22,30 @@ from .models import AtlasTechnique, Objective, Scan, TargetProject
 from .recon import profile_target, profile_to_atlas
 
 log = logging.getLogger("redteam.tasks")
+
+
+@worker_ready.connect
+def _reset_stale_scans(**_):
+    """워커 부팅 시 좀비 스캔 자동 정리 — 이전 워커가 물고 있다 끊긴(running) 또는 큐에서
+    유실된(pending) 스캔을 failed로 확정한다.
+
+    `task_acks_late=True`라 워커가 죽으면 in-flight 태스크가 재전달되는데, 그 스캔이
+    아직 running 상태면 run_scan이 skip하지 않고 다시 실행 → 접근 불가/무한 표적을
+    또 붙잡아 워커를 점유한다(좀비). 부팅 시 running/pending을 failed로 박아두면
+    재전달돼도 run_scan이 done/failed는 skip하므로 좀비가 되살아나지 못한다.
+    (이 시그널은 워커 프로세스에서만 발화 — 웹 backend엔 영향 없음)
+    """
+    try:
+        db = SessionLocal()
+        n = (db.query(Scan)
+               .filter(Scan.status.in_(["pending", "running"]))
+               .update({Scan.status: "failed"}, synchronize_session=False))
+        db.commit()
+        db.close()
+        if n:
+            log.info("[worker] 부팅 정리: 좀비 스캔 %s개 → failed", n)
+    except Exception:
+        log.exception("[worker] 부팅 정리 실패(계속)")
 
 
 def _now():
