@@ -6,11 +6,33 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: 백엔드 이미지 빌드 (의존성·Dockerfile 검증)
-        run: docker build -t redteam-backend .
-      - name: 파이썬 문법·import 검사
-        run: docker run --rm redteam-backend python -m compileall -q app
-      - name: 앱 import 스모크 (라우터·모델 로딩 확인)
-        run: docker run --rm -e DATABASE_URL=sqlite:// redteam-backend python -c "import app.main; print('app import OK')"
+
+      - name: 스택 기동 (db·redis·rabbitmq·backend·worker)
+        run: docker compose up -d --build db redis rabbitmq backend worker
+
+      - name: 백엔드 헬스 대기
+        run: |
+          for i in $(seq 1 40); do
+            if curl -sf http://localhost:8000/health; then echo " ✅ backend up"; exit 0; fi
+            sleep 3
+          done
+          echo "❌ backend 안 뜸"; docker compose logs --tail 50 backend; exit 1
+
+      - name: DB 스키마 생성 + CI 코퍼스 시드
+        run: |
+          docker compose exec -T -e PYTHONPATH=/app backend python scripts/recreate_db.py
+          docker compose exec -T -e PYTHONPATH=/app backend python scripts/ci_seed.py
+
+      - name: E2E 스모크 (등록→스캔→FLAG유출→리포트/트리 전체 관통)
+        run: docker compose exec -T -e PYTHONPATH=/app backend python scripts/smoke_e2e.py
+
+      - name: 실패 시 로그
+        if: failure()
+        run: docker compose logs --tail 80 backend worker
+
+      - name: 정리
+        if: always()
+        run: docker compose down -v
