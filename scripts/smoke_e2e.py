@@ -36,12 +36,16 @@ def main():
     db.add(t); db.commit(); db.refresh(t)
     print(f"▶ 표적 등록 target_id={t.target_id}")
 
+    # 인증: 엔드포인트가 JWT 보호되므로 mock dev-login으로 토큰 발급 → 모든 요청에 첨부
+    tok = httpx.post(f"{BASE}/auth/dev-login", json={"github_name": tag}, timeout=10).json()["access_token"]
+    client = httpx.Client(headers={"Authorization": f"Bearer {tok}"})
+
     # 1) GET /attack-types
-    at = httpx.get(f"{BASE}/attack-types", timeout=10).json()
+    at = client.get(f"{BASE}/attack-types", timeout=10).json()
     check("GET /attack-types", len(at) >= 5, f"{len(at)}종")
 
     # 2) POST /scans (진화 시작)
-    r = httpx.post(f"{BASE}/scans", json={"target_id": t.target_id,
+    r = client.post(f"{BASE}/scans", json={"target_id": t.target_id,
                    "config": {"attack_types": ["jailbreak", "prompt_injection", "system_prompt_leak"],
                               "canary": CANARY}}, timeout=10)
     sid = r.json()["scan_id"]
@@ -50,29 +54,29 @@ def main():
     # 3) 완료 대기 + GET /scans/{id}
     status = None
     for _ in range(90):
-        status = httpx.get(f"{BASE}/scans/{sid}", timeout=10).json()["status"]
+        status = client.get(f"{BASE}/scans/{sid}", timeout=10).json()["status"]
         if status in ("done", "failed"):
             break
         time.sleep(1)
     check("GET /scans/{id} 완료", status == "done", f"status={status}")
 
     # 4) SSE /stream 재생(?after=0 → 전체 이벤트 + done)
-    txt = httpx.get(f"{BASE}/scans/{sid}/stream?after=0", timeout=10).text
+    txt = client.get(f"{BASE}/scans/{sid}/stream?after=0&token={tok}", timeout=10).text
     check("GET /scans/{id}/stream (SSE 재생)",
           '"event": "done"' in txt and txt.count("data:") >= 3, f"{txt.count('data:')} 이벤트")
 
     # 5) GET /report (명세 형태 + 침투)
-    rep = httpx.get(f"{BASE}/scans/{sid}/report", timeout=10).json()
+    rep = client.get(f"{BASE}/scans/{sid}/report", timeout=10).json()
     check("GET /report", "total_objectives" in rep and "stats" in rep
           and rep["breached_count"] >= 1, f"침투 {rep.get('breached_count')}/{rep.get('total_objectives')}, 위험도 {rep.get('risk_score')}")
 
     # 6) GET /heatmap
-    hm = httpx.get(f"{BASE}/scans/{sid}/heatmap", timeout=10).json()
+    hm = client.get(f"{BASE}/scans/{sid}/heatmap", timeout=10).json()
     check("GET /heatmap", len(hm["cells"]) >= 1 and any(c["breached"] for c in hm["cells"]),
           f"{len(hm['cells'])} 셀, 침투 {sum(c['breached'] for c in hm['cells'])}")
 
     # 7) GET /findings (FLAG 유출 증거)
-    fs = httpx.get(f"{BASE}/scans/{sid}/findings", timeout=10).json()
+    fs = client.get(f"{BASE}/scans/{sid}/findings", timeout=10).json()
     leaked = any(CANARY in (f["evidence"].get("canary_hit") or "") for f in fs)
     check("GET /findings (FLAG 유출)", len(fs) >= 1 and leaked, f"{len(fs)}건, 카나리 매치={leaked}")
 
@@ -86,9 +90,9 @@ def main():
             pass
     # 침투 objective_id는 attempts에서 — 간단히 첫 finding의 attempt로 tree 검증
     aid = fs[0]["attempt_id"]
-    at_detail = httpx.get(f"{BASE}/attempts/{aid}", timeout=10).json()
+    at_detail = client.get(f"{BASE}/attempts/{aid}", timeout=10).json()
     oid = at_detail["objective_id"]
-    tree = httpx.get(f"{BASE}/objectives/{oid}/tree", timeout=10).json()
+    tree = client.get(f"{BASE}/objectives/{oid}/tree", timeout=10).json()
     check("GET /objectives/{id}/tree", len(tree["nodes"]) >= 1
           and any(n["breached"] for n in tree["nodes"]), f"{len(tree['nodes'])} 노드")
 
@@ -97,11 +101,11 @@ def main():
           f"verdict={at_detail['verdict']}, gen={at_detail['generation']}, op={at_detail['mutation_op']}")
 
     # 10) GET /summary (AI 요약 or 템플릿)
-    sm = httpx.get(f"{BASE}/scans/{sid}/summary", timeout=15).json()
+    sm = client.get(f"{BASE}/scans/{sid}/summary", timeout=15).json()
     check("GET /summary", bool(sm.get("ai_summary")), f"source={sm.get('source')}")
 
     # 11) GET /atlas
-    al = httpx.get(f"{BASE}/atlas", timeout=10).json()
+    al = client.get(f"{BASE}/atlas", timeout=10).json()
     check("GET /atlas", len(al) >= 1, f"{len(al)} 기법")
 
     print(f"\n{'='*50}")
