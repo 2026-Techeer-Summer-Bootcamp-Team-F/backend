@@ -56,6 +56,7 @@ def _project_list_item(t: TargetProject) -> dict:
     """목록 응답 — 대시보드 좌측용 축약 필드."""
     return {"target_id": t.target_id, "project_name": t.project_name,
             "actor_type": (t.config or {}).get("actor_type", ""),
+            "config": t.config or {},
             "model": t.model, "repo_url": t.repo_url, "created_at": t.created_at}
 
 
