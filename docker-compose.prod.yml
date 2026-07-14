@@ -15,9 +15,9 @@ services:
     build: .
     env_file: .env
     environment:
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
-      REDIS_URL: redis://redis:6379/0
-    ports: ["8000:8000"]
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672//}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    expose: ["8000"]   # 호스트 노출 X — Caddy(내부 네트워크)로만 접근
     depends_on:
       rabbitmq: {condition: service_healthy}
       redis: {condition: service_started}
@@ -27,8 +27,8 @@ services:
     build: .
     env_file: .env
     environment:
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
-      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672//}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
       rabbitmq: {condition: service_healthy}
       redis: {condition: service_started}
