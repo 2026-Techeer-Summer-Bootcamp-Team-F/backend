@@ -246,10 +246,7 @@ def code_locations(scan_id: int, db: Session = Depends(get_db)):
     if not sources:
         return {"scan_id": scan_id, "locations": [], "source": "fetch_failed"}
 
-    objs, _, _ = _collect(db, scan_id)
-    atlas_ids = {o.atlas_technique_id for o in objs}
-
-    locations = scan_code(sources, atlas_ids)
+    locations = scan_code(sources)
     return {"scan_id": scan_id, "locations": locations, "source": "repo"}
 
 

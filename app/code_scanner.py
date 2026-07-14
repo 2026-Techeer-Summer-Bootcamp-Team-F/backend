@@ -62,10 +62,11 @@ _PATTERNS: list[tuple] = [
 
 def scan_code(
     sources: dict[str, str],
-    atlas_ids: set[str],
+    atlas_ids: set[str] | None = None,
 ) -> list[dict]:
-    """레포 소스 dict를 순회하며 atlas_ids 관련 취약 패턴 라인을 반환.
+    """레포 소스 dict를 순회하며 취약 패턴 라인을 반환.
 
+    atlas_ids가 주어지면 해당 기법 패턴만, None이면 전체 패턴 검사.
     동일 라인에 여러 패턴이 걸려도 첫 번째 매치만 기록(중복 방지).
     """
     results: list[dict] = []
@@ -78,7 +79,7 @@ def scan_code(
             if not line_stripped or line_stripped.startswith('#'):
                 continue
             for pattern, reason, atlas_id, severity in _PATTERNS:
-                if atlas_id not in atlas_ids:
+                if atlas_ids is not None and atlas_id not in atlas_ids:
                     continue
                 if not pattern.search(line):
                     continue
