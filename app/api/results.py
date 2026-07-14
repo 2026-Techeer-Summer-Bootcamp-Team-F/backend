@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..db import get_db
+from ..deps import get_current_user
 from ..mitigations import get_mitigation
-from ..models import Attempt, AtlasTechnique, Finding, Objective, Scan
+from ..models import Attempt, AtlasTechnique, Finding, Objective, Scan, User
 
 router = APIRouter(prefix="/scans", tags=["results"])
 
@@ -58,7 +59,8 @@ def _collect(db: Session, scan_id: int):
 
 
 @router.get("/{scan_id}/report")
-def report(scan_id: int, db: Session = Depends(get_db)):
+def report(scan_id: int, db: Session = Depends(get_db),
+           _: User = Depends(get_current_user)):
     """대시보드 통계: 목표/시도/침투/취약점 + 위험도(심각도 가중). — §5"""
     scan = _scan_or_404(db, scan_id)
     objs, attempts, findings = _collect(db, scan_id)
@@ -90,7 +92,8 @@ def report(scan_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{scan_id}/heatmap")
-def heatmap(scan_id: int, db: Session = Depends(get_db)):
+def heatmap(scan_id: int, db: Session = Depends(get_db),
+            _: User = Depends(get_current_user)):
     """ATLAS 기법별 침투 히트맵 — objective별 상태 + 최고 fitness. — §5"""
     _scan_or_404(db, scan_id)
     objs, attempts, _ = _collect(db, scan_id)
@@ -131,7 +134,8 @@ def heatmap(scan_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{scan_id}/findings")
-def findings(scan_id: int, db: Session = Depends(get_db)):
+def findings(scan_id: int, db: Session = Depends(get_db),
+             _: User = Depends(get_current_user)):
     """취약점 목록 + 증거 + 완화책(finding→attempt→objective→atlas 조인). — §5"""
     _scan_or_404(db, scan_id)
     _, attempts, finds = _collect(db, scan_id)
@@ -195,7 +199,8 @@ def _build_summary(scan, rep, finds_detail) -> dict:
 
 
 @router.get("/{scan_id}/summary")
-def ai_summary(scan_id: int, db: Session = Depends(get_db)):
+def ai_summary(scan_id: int, db: Session = Depends(get_db),
+               _: User = Depends(get_current_user)):
     """리포트 AI 요약 — 키 없으면 통계 템플릿, 있으면 Haiku. — §5·§7"""
     scan = _scan_or_404(db, scan_id)
     rep = report(scan_id, db)

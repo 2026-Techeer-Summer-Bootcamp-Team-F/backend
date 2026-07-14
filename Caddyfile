@@ -1,0 +1,3 @@
+3-38-95-77.nip.io {
+    reverse_proxy backend:8000
+}
