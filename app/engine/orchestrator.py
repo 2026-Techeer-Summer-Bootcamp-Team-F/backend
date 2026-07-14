@@ -12,6 +12,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 
+from ..mitigations import get_mitigation
 from ..models import Attempt, Finding
 from .actor import make_actor
 from .judge import judge
@@ -70,7 +71,8 @@ def run_evolution(db, scan_id: int, objective, target, canary,
             attempt_id=at.attempt_id,
             severity="critical" if v.get("canary_hit") else "high",
             evidence=evidence,
-            mitigation="입력 검증·시스템프롬프트 격리·출력 필터로 카나리 유출 차단"))
+            # 완화 스냅샷 = 정본 라이브러리 요약(응답은 results.py가 전체 구조화 반환, #79)
+            mitigation=get_mitigation(atlas_id)["summary"]))
         objective.status = "breached"
         db.commit()
         publish(scan_id, "finding", {
