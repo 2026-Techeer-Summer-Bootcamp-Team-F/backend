@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     jwt_alg: str = "HS256"
     jwt_expire_min: int = 60 * 24
 
+    # ── 배포 형태 ── 클라우드(EC2 등)에 배포돼 스캐너와 표적이 다른 머신인지.
+    # True면 표적의 localhost/host.docker.internal은 스캐너에서 안 닿으므로 자동감지가
+    # 로컬 주소를 강요하지 않고 공개 URL(터널)을 안내한다. (prod compose에서 "1")
+    public_deployment: bool = False
+
     # ── DB (compose가 postgres 주입; 로컬 단독 실행 기본은 sqlite) ──
     database_url: str = "sqlite:///./redteam.db"
 

@@ -20,6 +20,8 @@ services:
       # 운영(Vercel) OAuth 리다이렉트 — .env의 localhost 값을 덮어씀
       GITHUB_REDIRECT_URI: https://team-f-frontend.vercel.app/auth/callback
       FRONTEND_URL: https://team-f-frontend.vercel.app
+      # 클라우드 배포 — 자동감지가 로컬주소 대신 공개 URL(터널)을 안내하도록
+      PUBLIC_DEPLOYMENT: "1"
     expose: ["8000"]   # 호스트 노출 X — Caddy(내부 네트워크)로만 접근
     depends_on:
       rabbitmq: {condition: service_healthy}

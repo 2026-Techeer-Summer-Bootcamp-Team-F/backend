@@ -150,17 +150,27 @@ def detect_config(body: DetectIn, user: User = Depends(get_current_user)):
            "body_template": contract["body_template"],
            "response_path": contract["response_path"]}
     # URL 프리필: 사용자가 준 url 우선, 없으면 감지한 포트+경로로 추천.
-    # 호스트는 런타임이라 추정 — 스캐너가 도커면 host.docker.internal, 아니면 localhost.
+    hint = None
     if body.url:
         cfg["url"] = body.url
     elif contract.get("route_path"):
-        host = "host.docker.internal" if os.path.exists("/.dockerenv") else "localhost"
         portpart = f":{contract['port']}" if contract.get("port") else ""
-        cfg["url"] = f"http://{host}{portpart}{contract['route_path']}"
+        route = contract["route_path"]
+        if settings.public_deployment:
+            # 배포된 스캐너는 사용자 PC의 localhost에 못 닿는다. host.docker.internal도
+            # 클라우드 호스트를 가리켜 무의미 → 로컬 주소를 그대로 제안하되 공개 URL 안내.
+            cfg["url"] = f"http://localhost{portpart}{route}"
+            hint = ("감지된 주소가 로컬(localhost)이에요. 배포된 REDI는 여러분 PC의 "
+                    "localhost에 닿지 못해요. 공개 URL(ngrok·cloudflared 터널 주소)로 "
+                    f"바꿔주세요 — 경로 {route} 는 그대로 두면 됩니다.")
+        else:
+            # 로컬 개발: 스캐너가 도커면 표적의 localhost는 host.docker.internal.
+            host = "host.docker.internal" if os.path.exists("/.dockerenv") else "localhost"
+            cfg["url"] = f"http://{host}{portpart}{route}"
     return {"detected": True, "source": "repo",
             "confidence": contract["confidence"],
             "route_path": contract.get("route_path"),
-            "port": contract.get("port"), "config": cfg}
+            "port": contract.get("port"), "hint": hint, "config": cfg}
 
 
 @router.get("/projects")
