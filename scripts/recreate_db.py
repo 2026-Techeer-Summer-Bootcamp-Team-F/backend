@@ -11,6 +11,7 @@
 ⚠️ dev 전용 — 스캔/사용자 테스트 데이터는 날아간다. 운영은 Alembic 마이그레이션을 쓸 것.
 실행: docker compose exec -T -e PYTHONPATH=/app backend python scripts/recreate_db.py
 """
+import os
 import sys
 
 from sqlalchemy import text
@@ -26,6 +27,17 @@ _DROP = ["scan_reports", "scan_events", "findings", "attempts",
 
 
 def main():
+    # ⚠️ 운영 DB 보호(팀원 실수 방지): 로컬 DB가 아니면 데이터 삭제를 막는다.
+    #    RDS 등 원격이면 중단. 정말 재생성해야 하면 ALLOW_PROD_RECREATE=1 로 실행.
+    host = (engine.url.host or "").lower()
+    is_local = host in ("", "localhost", "127.0.0.1", "db")
+    if not is_local and os.environ.get("ALLOW_PROD_RECREATE") != "1":
+        print(f"⛔ 원격/운영 DB로 보입니다 (host={host}).")
+        print("   사용자/스캔 데이터 유실 방지로 중단합니다.")
+        print("   운영 스키마 변경은 Alembic 마이그레이션을 쓰세요.")
+        print("   (정말 재생성이 필요하면 ALLOW_PROD_RECREATE=1 로 실행 — 데이터 삭제 감수)")
+        sys.exit(1)
+
     with engine.begin() as c:
         for t in _DROP:
             c.execute(text(f'DROP TABLE IF EXISTS "{t}" CASCADE'))
