@@ -111,11 +111,13 @@ def run_scan(scan_id: int) -> dict:
             log.warning("[worker] scan 없음: scan_id=%s", scan_id)
             return {"scan_id": scan_id, "status": "missing"}
 
-        # ── 멱등화(결정로그 §3-2): 이미 '끝난'(done/failed) 스캔의 재전달만 중복 실행 skip ──
-        # RabbitMQ도 at-least-once라 같은 태스크가 두 번 배달될 수 있음. 단 'running'은
+        # ── 멱등화(결정로그 §3-2): 이미 '끝난' 스캔의 재전달을 중복 실행 skip ──
+        # RabbitMQ도 at-least-once라 같은 태스크가 두 번 배달될 수 있음. done/failed/
+        # cancelled는 모두 종료 상태 → 재전달돼도 절대 재실행하지 않는다. (특히 cancelled를
+        # 빠뜨리면 취소된 좀비 스캔이 되살아나 워커를 점유함 — 실경험). 단 'running'은
         # skip하지 않는다 — acks_late로 워커 급사 후 재전달된 경우라 다시 돌려야 크래시 복구가
         # 됨(running에서 skip하면 죽은 스캔이 영영 running에 갇힘).
-        if scan.status in ("done", "failed"):
+        if scan.status in ("done", "failed", "cancelled"):
             log.info("[worker] 멱등 skip: scan_id=%s (status=%s)", scan_id, scan.status)
             return {"scan_id": scan_id, "status": scan.status, "skipped": True}
 
