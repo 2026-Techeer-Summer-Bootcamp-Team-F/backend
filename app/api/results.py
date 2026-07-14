@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..db import get_db
+from ..mitigations import get_mitigation
 from ..models import Attempt, AtlasTechnique, Finding, Objective, Scan
 
 router = APIRouter(prefix="/scans", tags=["results"])
@@ -156,7 +157,9 @@ def findings(scan_id: int, db: Session = Depends(get_db)):
             "generation": at.generation if at else None,
             "prompt": (at.prompt_text[:300] if at else None),
             "evidence": evidence,
-            "mitigation": f.mitigation,
+            # 완화책은 정본 라이브러리에서 기법별 구조화 가이드로 제공(#79).
+            # DB f.mitigation(요약 스냅샷)은 유지되나, 응답은 항상 최신 정본을 반환.
+            "mitigation": get_mitigation(obj.atlas_technique_id if obj else None),
             "created_at": f.created_at,
         })
     return out
