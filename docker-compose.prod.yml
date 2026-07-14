@@ -17,6 +17,9 @@ services:
     environment:
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672//}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # 운영(Vercel) OAuth 리다이렉트 — .env의 localhost 값을 덮어씀
+      GITHUB_REDIRECT_URI: https://team-f-frontend.vercel.app/auth/callback
+      FRONTEND_URL: https://team-f-frontend.vercel.app
     expose: ["8000"]   # 호스트 노출 X — Caddy(내부 네트워크)로만 접근
     depends_on:
       rabbitmq: {condition: service_healthy}
