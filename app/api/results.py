@@ -14,7 +14,10 @@ from ..config import settings
 from ..db import get_db
 from ..deps import get_current_user
 from ..mitigations import get_mitigation
-from ..models import Attempt, AtlasTechnique, Finding, Objective, Scan, User
+from ..models import Attempt, AtlasTechnique, Finding, Objective, Scan, TargetProject, User
+from ..code_scanner import scan_code
+from ..recon import fetch_repo_sources
+from ..security import decrypt_token
 
 router = APIRouter(prefix="/scans", tags=["results"])
 
@@ -223,6 +226,31 @@ def evolution(scan_id: int, db: Session = Depends(get_db)):
         }
         for o in objs
     ]}
+
+
+@router.get("/{scan_id}/code-locations")
+def code_locations(scan_id: int, db: Session = Depends(get_db)):
+    """레포 코드에서 ATLAS 기법별 취약 위치 탐지 — 파일·라인·스니펫 반환.
+
+    레포 미등록 또는 fetch 실패 시 빈 배열(프론트가 조용히 숨김).
+    """
+    scan = _scan_or_404(db, scan_id)
+    target = db.get(TargetProject, scan.target_id)
+    if not target or not target.repo_url:
+        return {"scan_id": scan_id, "locations": [], "source": "no_repo"}
+
+    user = db.get(User, target.user_id)
+    token = decrypt_token(user.access_token_enc) if user and user.access_token_enc else None
+
+    sources = fetch_repo_sources(target.repo_url, token)
+    if not sources:
+        return {"scan_id": scan_id, "locations": [], "source": "fetch_failed"}
+
+    objs, _, _ = _collect(db, scan_id)
+    atlas_ids = {o.atlas_technique_id for o in objs}
+
+    locations = scan_code(sources, atlas_ids)
+    return {"scan_id": scan_id, "locations": locations, "source": "repo"}
 
 
 @router.get("/{scan_id}/summary")
