@@ -15,8 +15,8 @@ services:
     build: .
     env_file: .env
     environment:
-      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672//}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//   # 내부 서비스명 고정(.env의 localhost 무시)
+      REDIS_URL: redis://redis:6379/0
       # 운영(Vercel) OAuth 리다이렉트 — .env의 localhost 값을 덮어씀
       GITHUB_REDIRECT_URI: https://team-f-frontend.vercel.app/auth/callback
       FRONTEND_URL: https://team-f-frontend.vercel.app
@@ -30,8 +30,8 @@ services:
     build: .
     env_file: .env
     environment:
-      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672//}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//   # 내부 서비스명 고정(.env의 localhost 무시)
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       rabbitmq: {condition: service_healthy}
       redis: {condition: service_started}
