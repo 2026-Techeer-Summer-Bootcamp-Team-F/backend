@@ -194,6 +194,33 @@ def _build_summary(scan, rep, finds_detail) -> dict:
         return {"ai_summary": template, "source": "template-fallback"}
 
 
+@router.get("/{scan_id}/evolution")
+def evolution(scan_id: int, db: Session = Depends(get_db)):
+    """공격 진화 트리 — objective별 attempt 계보(parent_id 포함). 리포트 트리 시각화용."""
+    _scan_or_404(db, scan_id)
+    objs, attempts, _ = _collect(db, scan_id)
+    at_by_obj: dict = {}
+    for a in attempts:
+        at_by_obj.setdefault(a.objective_id, []).append({
+            "attempt_id": a.attempt_id,
+            "parent_id":  a.parent_id,
+            "generation": a.generation,
+            "mutation_op": a.mutation_op or "seed",
+            "fitness":    round(a.fitness or 0.0, 3),
+            "breached":   bool(a.breached),
+            "prompt":     (a.prompt_text or "")[:120],
+        })
+    return {"scan_id": scan_id, "objectives": [
+        {
+            "objective_id":      o.objective_id,
+            "atlas_technique_id": o.atlas_technique_id,
+            "status":            o.status,
+            "attempts":          at_by_obj.get(o.objective_id, []),
+        }
+        for o in objs
+    ]}
+
+
 @router.get("/{scan_id}/summary")
 def ai_summary(scan_id: int, db: Session = Depends(get_db)):
     """리포트 AI 요약 — 키 없으면 통계 템플릿, 있으면 Haiku. — §5·§7"""
