@@ -28,6 +28,7 @@ from ..models import (
 )
 from ..recon import attack_types_to_atlas
 from ..schemas import ScanCreate
+from ..security import decode_access_token
 from ..tasks import run_scan
 
 router = APIRouter(prefix="/scans", tags=["scans"])
@@ -50,7 +51,8 @@ def _resolve_objective_atlas(db: Session, config: dict) -> list:
 
 
 @router.post("", status_code=202)
-def start_scan(body: ScanCreate, db: Session = Depends(get_db)):
+def start_scan(body: ScanCreate, db: Session = Depends(get_db),
+               _: User = Depends(get_current_user)):
     """스캔 트리거: scans 저장(pending) → objectives 저장 → Celery 큐잉 → 202.
 
     TODO(auth): 소유권 검증(get_current_user)은 팀원 JWT 완성 후. 지금은 표적 존재만
@@ -77,7 +79,8 @@ def start_scan(body: ScanCreate, db: Session = Depends(get_db)):
 
 
 @router.get("")
-def list_scans(db: Session = Depends(get_db)):
+def list_scans(db: Session = Depends(get_db),
+               _: User = Depends(get_current_user)):
     """내 스캔 목록(대시보드). TODO(auth): user 필터. 지금은 최신순 전체."""
     scans = db.scalars(sa_select(Scan).order_by(Scan.scan_id.desc()).limit(50)).all()
     return [{"scan_id": s.scan_id, "target_id": s.target_id, "status": s.status,
@@ -85,7 +88,8 @@ def list_scans(db: Session = Depends(get_db)):
 
 
 @router.get("/{scan_id}")
-def get_scan(scan_id: int, db: Session = Depends(get_db)):
+def get_scan(scan_id: int, db: Session = Depends(get_db),
+             _: User = Depends(get_current_user)):
     """스캔 1건: 상태 + 진행 + objectives 개수/상태(진행상황 관찰용)."""
     scan = db.get(Scan, scan_id)
     if scan is None:
@@ -214,7 +218,8 @@ def delete_scan(
 
 
 @router.post("/{scan_id}/cancel")
-def cancel_scan(scan_id: int, db: Session = Depends(get_db)):
+def cancel_scan(scan_id: int, db: Session = Depends(get_db),
+                _: User = Depends(get_current_user)):
     """스캔 취소 — status=cancelled로 표시. 워커(run_scan)가 목표 사이에서 감지해 중단. — §4"""
     scan = db.get(Scan, scan_id)
     if scan is None:
@@ -230,7 +235,7 @@ def cancel_scan(scan_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{scan_id}/stream")
-async def scan_stream(scan_id: int, request: Request, after: int = 0):
+async def scan_stream(scan_id: int, request: Request, after: int = 0, token: str = ""):
     """SSE(#41) — scan_events(DB)를 폴링해 진행상황 스트림. (API-명세 §5 `/scans/{id}/stream`)
 
     ⚠️ 경로는 명세·프론트(EventSource)에 맞춰 `/stream`. (구 `/events`에서 정정, 2026-07-10)
@@ -243,6 +248,13 @@ async def scan_stream(scan_id: int, request: Request, after: int = 0):
     - 무이벤트가 MAX_IDLE(초) 지속되면 스트림 종료(연결 누수 방지).
     """
     MAX_IDLE = 300  # 새 이벤트 없이 5분(=300×1s) 지나면 스트림 닫음
+
+    # SSE 인증: EventSource는 Authorization 헤더를 못 실으므로 `?token=<jwt>`로 검증(#41).
+    # 없거나 무효면 401. (프론트 RunScanPage가 이미 ?token=로 붙여 보냄)
+    try:
+        decode_access_token(token)
+    except Exception:  # noqa: BLE001 - 만료/무효/빈값 전부 401
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "토큰 없음 또는 무효") from None
 
     # 브라우저 EventSource 자동 재접속 시 보내는 Last-Event-ID 헤더를 ?after=보다 우선
     lei = request.headers.get("Last-Event-ID")

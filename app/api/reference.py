@@ -12,7 +12,8 @@ from sqlalchemy import select as sa_select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..models import Attempt, AtlasTechnique, Objective
+from ..deps import get_current_user
+from ..models import Attempt, AtlasTechnique, Objective, User
 from ..recon import _TYPE_TO_ATLAS
 
 router = APIRouter(tags=["reference"])
@@ -35,14 +36,14 @@ _ATTACK_TYPE_LABELS = {
 
 
 @router.get("/attack-types")
-def attack_types():
+def attack_types(_: User = Depends(get_current_user)):
     """스캔 시작 화면 공격유형 체크박스 목록. key=요청값, atlas=매핑 기법."""
     return [{"key": k, "label": _ATTACK_TYPE_LABELS.get(k, k), "atlas_technique_id": a}
             for k, a in _TYPE_TO_ATLAS.items()]
 
 
 @router.get("/atlas")
-def atlas(db: Session = Depends(get_db)):
+def atlas(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     """ATLAS 기법 마스터 목록(id·이름·전술·분류·완화책)."""
     techs = db.scalars(sa_select(AtlasTechnique).order_by(AtlasTechnique.id)).all()
     return [{"id": t.id, "name": t.name, "tactic": t.tactic, "category": t.category,
@@ -50,7 +51,8 @@ def atlas(db: Session = Depends(get_db)):
 
 
 @router.get("/objectives/{objective_id}/tree")
-def objective_tree(objective_id: int, db: Session = Depends(get_db)):
+def objective_tree(objective_id: int, db: Session = Depends(get_db),
+                   _: User = Depends(get_current_user)):
     """진화 트리 — 한 목표의 attempt 계보(parent_id). 프론트가 트리로 렌더. — §5"""
     obj = db.get(Objective, objective_id)
     if obj is None:
@@ -69,7 +71,8 @@ def objective_tree(objective_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/attempts/{attempt_id}")
-def attempt_detail(attempt_id: int, db: Session = Depends(get_db)):
+def attempt_detail(attempt_id: int, db: Session = Depends(get_db),
+                   _: User = Depends(get_current_user)):
     """시도 상세 — 프롬프트·응답·판정·계보. 프론트 EvidenceViewer. — §5"""
     at = db.get(Attempt, attempt_id)
     if at is None:

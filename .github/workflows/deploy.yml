@@ -1,0 +1,24 @@
+name: Deploy backend to EC2
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Rsync code to EC2
+        run: |
+          rsync -az --exclude='.git' --exclude='.github' --exclude='docs' --exclude='.env' \
+            -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" ./ ec2-user@${{ secrets.EC2_HOST }}:~/backend/
+      - name: Redeploy on EC2
+        run: |
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} \
+            "cd ~/backend && docker compose -f docker-compose.prod.yml up -d --build backend worker caddy"

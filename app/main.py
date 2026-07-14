@@ -20,6 +20,7 @@ app = FastAPI(title="AI Red-Team API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.frontend_url],
+    allow_origin_regex=r"https://.*\.vercel\.app",  # Vercel 배포(프리뷰·프로덕션) 전부 허용
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -1,0 +1,16 @@
+name: CI test
+on:
+  pull_request:
+    branches: [develop]
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 백엔드 이미지 빌드 (의존성·Dockerfile 검증)
+        run: docker build -t redteam-backend .
+      - name: 파이썬 문법·import 검사
+        run: docker run --rm redteam-backend python -m compileall -q app
+      - name: 앱 import 스모크 (라우터·모델 로딩 확인)
+        run: docker run --rm -e DATABASE_URL=sqlite:// redteam-backend python -c "import app.main; print('app import OK')"
