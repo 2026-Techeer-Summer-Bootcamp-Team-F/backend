@@ -10,6 +10,8 @@
 import logging
 from datetime import datetime, timezone
 
+from celery.exceptions import SoftTimeLimitExceeded
+from celery.signals import worker_ready
 from sqlalchemy import select as sa_select
 
 from .celery_app import celery_app
@@ -20,6 +22,30 @@ from .models import AtlasTechnique, Objective, Scan, TargetProject
 from .recon import profile_target, profile_to_atlas
 
 log = logging.getLogger("redteam.tasks")
+
+
+@worker_ready.connect
+def _reset_stale_scans(**_):
+    """워커 부팅 시 좀비 스캔 자동 정리 — 이전 워커가 물고 있다 끊긴(running) 또는 큐에서
+    유실된(pending) 스캔을 failed로 확정한다.
+
+    `task_acks_late=True`라 워커가 죽으면 in-flight 태스크가 재전달되는데, 그 스캔이
+    아직 running 상태면 run_scan이 skip하지 않고 다시 실행 → 접근 불가/무한 표적을
+    또 붙잡아 워커를 점유한다(좀비). 부팅 시 running/pending을 failed로 박아두면
+    재전달돼도 run_scan이 done/failed는 skip하므로 좀비가 되살아나지 못한다.
+    (이 시그널은 워커 프로세스에서만 발화 — 웹 backend엔 영향 없음)
+    """
+    try:
+        db = SessionLocal()
+        n = (db.query(Scan)
+               .filter(Scan.status.in_(["pending", "running"]))
+               .update({Scan.status: "failed"}, synchronize_session=False))
+        db.commit()
+        db.close()
+        if n:
+            log.info("[worker] 부팅 정리: 좀비 스캔 %s개 → failed", n)
+    except Exception:
+        log.exception("[worker] 부팅 정리 실패(계속)")
 
 
 def _now():
@@ -85,11 +111,13 @@ def run_scan(scan_id: int) -> dict:
             log.warning("[worker] scan 없음: scan_id=%s", scan_id)
             return {"scan_id": scan_id, "status": "missing"}
 
-        # ── 멱등화(결정로그 §3-2): 이미 '끝난'(done/failed) 스캔의 재전달만 중복 실행 skip ──
-        # RabbitMQ도 at-least-once라 같은 태스크가 두 번 배달될 수 있음. 단 'running'은
+        # ── 멱등화(결정로그 §3-2): 이미 '끝난' 스캔의 재전달을 중복 실행 skip ──
+        # RabbitMQ도 at-least-once라 같은 태스크가 두 번 배달될 수 있음. done/failed/
+        # cancelled는 모두 종료 상태 → 재전달돼도 절대 재실행하지 않는다. (특히 cancelled를
+        # 빠뜨리면 취소된 좀비 스캔이 되살아나 워커를 점유함 — 실경험). 단 'running'은
         # skip하지 않는다 — acks_late로 워커 급사 후 재전달된 경우라 다시 돌려야 크래시 복구가
         # 됨(running에서 skip하면 죽은 스캔이 영영 running에 갇힘).
-        if scan.status in ("done", "failed"):
+        if scan.status in ("done", "failed", "cancelled"):
             log.info("[worker] 멱등 skip: scan_id=%s (status=%s)", scan_id, scan.status)
             return {"scan_id": scan_id, "status": scan.status, "skipped": True}
 
@@ -122,6 +150,10 @@ def run_scan(scan_id: int) -> dict:
             try:
                 if run_evolution(db, scan_id, obj, target, canary):
                     breached += 1
+            except SoftTimeLimitExceeded:
+                # 스캔 전체 시간초과 → 이 목표에서 삼키지 말고 바깥으로 던져 스캔을 failed 종료
+                # (안 그러면 다음 목표로 넘어가 hard time_limit에 강제 종료 → acks_late 재전달 루프)
+                raise
             except Exception:
                 log.exception("[worker] objective 진화 실패(계속): objective_id=%s", obj.objective_id)
                 obj.status = "failed"
