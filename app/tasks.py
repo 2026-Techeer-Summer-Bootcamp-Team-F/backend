@@ -10,6 +10,7 @@
 import logging
 from datetime import datetime, timezone
 
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select as sa_select
 
 from .celery_app import celery_app
@@ -122,6 +123,10 @@ def run_scan(scan_id: int) -> dict:
             try:
                 if run_evolution(db, scan_id, obj, target, canary):
                     breached += 1
+            except SoftTimeLimitExceeded:
+                # 스캔 전체 시간초과 → 이 목표에서 삼키지 말고 바깥으로 던져 스캔을 failed 종료
+                # (안 그러면 다음 목표로 넘어가 hard time_limit에 강제 종료 → acks_late 재전달 루프)
+                raise
             except Exception:
                 log.exception("[worker] objective 진화 실패(계속): objective_id=%s", obj.objective_id)
                 obj.status = "failed"
