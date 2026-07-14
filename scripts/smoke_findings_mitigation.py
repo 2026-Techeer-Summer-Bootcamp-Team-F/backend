@@ -30,7 +30,7 @@ def _check_module() -> bool:
     # ① 필수 키 + steps 비어있지 않음
     for aid in _SCOPE:
         m = get_mitigation(aid)
-        if set(m) < _KEYS or not m["steps"]:
+        if not _KEYS <= set(m) or not m["steps"]:
             print(f"  ✗ {aid} 구조 불량: keys={set(m)} steps={len(m['steps'])}")
             ok = False
     # ② summary 획일성 제거(서로 다름)
