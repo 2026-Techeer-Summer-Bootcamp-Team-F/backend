@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from ..authz import attempt_owned_or_404, objective_owned_or_404
 from ..db import get_db
 from ..deps import get_current_user
+from ..mitigations import get_mitigation
 from ..models import Attempt, AtlasTechnique, Objective, User
 from ..recon import _TYPE_TO_ATLAS
 
@@ -45,10 +46,15 @@ def attack_types(_: User = Depends(get_current_user)):
 
 @router.get("/atlas")
 def atlas(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    """ATLAS 기법 마스터 목록(id·이름·전술·분류·완화책)."""
+    """ATLAS 기법 마스터 목록(id·이름·전술·분류·완화책+참고).
+
+    references는 기법별 정본(mitigations.py)에서 — 방어 성공(finding 없는) 기법도
+    셀 팝업에 참고 링크가 뜨도록. (미매핑 기법은 일반 폴백 참고)
+    """
     techs = db.scalars(sa_select(AtlasTechnique).order_by(AtlasTechnique.id)).all()
     return [{"id": t.id, "name": t.name, "tactic": t.tactic, "category": t.category,
-             "description": t.description, "mitigation": t.mitigation} for t in techs]
+             "description": t.description, "mitigation": t.mitigation,
+             "references": get_mitigation(t.id).get("references", [])} for t in techs]
 
 
 @router.get("/objectives/{objective_id}/tree")

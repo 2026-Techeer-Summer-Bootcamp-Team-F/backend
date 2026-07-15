@@ -22,6 +22,9 @@ from copy import deepcopy
 # 자주 쓰는 공식 근거 링크(상수).
 _OWASP_LLM01 = {"label": "OWASP LLM01 Prompt Injection",
                 "url": "https://genai.owasp.org/llmrisk/llm01-prompt-injection/"}
+# Jailbreak(T0054)용 — OWASP는 탈옥을 LLM01에 포함하지만 라벨에 명시(프롬프트 인젝션으로 오인 방지).
+_OWASP_LLM01_JAILBREAK = {"label": "OWASP LLM01: Jailbreak (Prompt Injection)",
+                          "url": "https://genai.owasp.org/llmrisk/llm01-prompt-injection/"}
 _OWASP_LLM02 = {"label": "OWASP LLM02 Sensitive Information Disclosure",
                 "url": "https://genai.owasp.org/llmrisk/llm02-sensitive-information-disclosure/"}
 _OWASP_LLM06 = {"label": "OWASP LLM06 Excessive Agency",
@@ -65,7 +68,7 @@ _MITIGATIONS: dict[str, dict] = {
             "입출력 가드레일(llm-guard 등) 적용",
         ],
         "verify": "동일 탈옥 프롬프트를 재발사(스캔 재실행)해 차단/거부되는지 확인",
-        "references": [_OWASP_LLM01, _atlas_ref("AML.T0054")],
+        "references": [_OWASP_LLM01_JAILBREAK, _atlas_ref("AML.T0054")],
     },
     # 프롬프트 인젝션(일반 base)
     "AML.T0051": {
