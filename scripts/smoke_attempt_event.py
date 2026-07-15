@@ -206,7 +206,7 @@ def main():
                     ("attempt_started", 2), ("attempt", 2),
                     ("attempt_started", 3), ("attempt", 3)]
         assert seq == expected, f"이벤트 순서/순번 불일치: {seq}"
-        for s, a in zip(started, events):
+        for s, a in zip(started, events, strict=True):   # 길이 어긋나면 조용히 잘리지 않게
             assert s["attempt_index"] == a["attempt_index"], "쌍의 attempt_index 불일치"
             assert s["attack_prompt"] == a["attack_prompt"], "쌍의 attack_prompt 불일치"
             assert s["generation"] == a["generation"], "쌍의 generation 불일치"
