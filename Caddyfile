@@ -1,3 +1,9 @@
 3-38-95-77.nip.io {
-    reverse_proxy backend:8000
+    # 관측성 대시보드(#93): /grafana → Grafana(서브패스 서빙). obs compose가 떠 있을 때만 동작.
+    handle /grafana* {
+        reverse_proxy grafana:3000
+    }
+    handle {
+        reverse_proxy backend:8000
+    }
 }
