@@ -47,7 +47,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [ { "refId": "A", "expr": "sum(rate(http_requests_total{handler!=\"/metrics\"}[5m]))", "legendFormat": "요청", "datasource": { "type": "prometheus", "uid": "prometheus" } } ],
-      "fieldConfig": { "defaults": { "unit": "reqps", "color": { "mode": "fixed", "fixedColor": "semi-dark-blue" }, "custom": { "drawStyle": "line", "fillOpacity": 12 } }, "overrides": [] },
+      "fieldConfig": { "defaults": { "unit": "reqps", "color": { "mode": "fixed", "fixedColor": "#8e9aa8" }, "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
     },
     {

@@ -62,19 +62,19 @@
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
     },
     {
-      "id": 7, "type": "piechart", "title": "판정 계층 분포(judge stage)",
+      "id": 7, "type": "bargauge", "title": "판정 계층 분포(judge stage)",
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [ { "refId": "A", "expr": "sum by (stage) (redteam_judge_stage_total)", "legendFormat": "{{stage}}", "datasource": { "type": "prometheus", "uid": "prometheus" } } ],
-      "fieldConfig": { "defaults": {}, "overrides": [] },
-      "options": { "legend": { "displayMode": "list", "placement": "right" }, "pieType": "donut", "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "#8e9aa8" } }, "overrides": [] },
+      "options": { "displayMode": "basic", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } }
     },
     {
       "id": 8, "type": "bargauge", "title": "ATLAS 기법별 침투 수",
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [ { "refId": "A", "expr": "sum by (atlas) (redteam_breaches_total)", "legendFormat": "{{atlas}}", "datasource": { "type": "prometheus", "uid": "prometheus" } } ],
-      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "semi-dark-blue" } }, "overrides": [] },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "#8e9aa8" } }, "overrides": [] },
       "options": { "displayMode": "basic", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } }
     },
     {
@@ -82,7 +82,7 @@
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [ { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(redteam_scan_duration_seconds_bucket[5m])))", "legendFormat": "p95", "datasource": { "type": "prometheus", "uid": "prometheus" } } ],
-      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "fieldConfig": { "defaults": { "unit": "s", "color": { "mode": "fixed", "fixedColor": "#8e9aa8" }, "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
     }
   ]
