@@ -188,6 +188,11 @@ def run_scan(scan_id: int) -> dict:
         db.commit()
         publish(scan_id, "done",
                 {"status": "done", "objectives": len(objectives), "breached": breached}, db=db)
+        try:  # AI 요약 사전 생성+캐싱 — 리포트 첫 조회 시 Haiku 지연(2~5초) 제거
+            from .api.results import warm_summary
+            warm_summary(db, scan)
+        except Exception:  # noqa: BLE001 - 요약 실패는 스캔 성공에 영향 없음(다음 조회 때 재생성)
+            log.warning("[worker] 요약 사전생성 실패: scan_id=%s", scan_id, exc_info=True)
         log.info("[worker] run_scan 완료: scan_id=%s (objectives=%s)", scan_id, len(objectives))
         result_status = "done"
         return {"scan_id": scan_id, "status": "done"}
