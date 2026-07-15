@@ -14,7 +14,7 @@ from ..config import settings
 from ..db import get_db
 from ..deps import get_current_user
 from ..mitigations import get_mitigation
-from ..models import Attempt, AtlasTechnique, Finding, Objective, Scan, User
+from ..models import Attempt, AtlasTechnique, Finding, Objective, Scan, TargetProject, User
 
 router = APIRouter(prefix="/scans", tags=["results"])
 
@@ -207,3 +207,19 @@ def ai_summary(scan_id: int, db: Session = Depends(get_db),
     rep = report(scan_id, db)
     finds = findings(scan_id, db)
     return {"scan_id": scan_id, **_build_summary(scan, rep, finds)}
+
+
+@router.get("/{scan_id}/code-locations")
+def code_locations(scan_id: int, db: Session = Depends(get_db),
+                   _: User = Depends(get_current_user)):
+    """스캔에서 테스트한 ATLAS 기법에 해당하는 취약 코드 위치 반환."""
+    scan = _scan_or_404(db, scan_id)
+    target = db.get(TargetProject, scan.target_id)
+    if not target:
+        return []
+
+    objs = db.scalars(sa_select(Objective).where(Objective.scan_id == scan_id)).all()
+    tested_atlas_ids = {o.atlas_technique_id for o in objs}
+
+    locs = target.code_locations if isinstance(target.code_locations, list) else []
+    return [loc for loc in locs if loc.get("atlas_id") in tested_atlas_ids]
