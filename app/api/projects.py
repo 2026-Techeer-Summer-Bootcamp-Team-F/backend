@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..deps import get_current_user
 from ..models import TargetProject, User, _now
+from ..engine.code_scanner import run_code_scan
 from ..recon import detect_http_contract, fetch_repo_sources, profile_target
 from ..schemas import ActorSaveIn, DetectIn, ProjectCreateIn, ProjectUpdateIn
 from ..security import decrypt_token
@@ -274,16 +275,14 @@ def save_actor(target_id: int, body: ActorSaveIn,
 @router.post("/projects/{target_id}/recon")
 def recon(target_id: int, db: Session = Depends(get_db),
           user: User = Depends(get_current_user)):
-    """정찰 실행 → target_projects.model/defences/tools/rag_sources 갱신. recon.py 호출.
-
-    코드 소스는 config.source_path(로컬) 우선, 없으면 등록입력만. repo fetch는 팀원 auth 대기.
-    save_actor와 동일하게 인증+소유권 검증(본인 프로젝트만).
-    """
+    """정찰 실행 → target_projects.model/defences/tools/rag_sources/code_locations 갱신."""
     target = db.get(TargetProject, target_id)
     if target is None or target.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "프로젝트 없음")
     if target.user_id != user.user_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "본인 프로젝트만 정찰 가능")
+
+    # 기존 프로파일 추출
     profile = profile_target(target)
     target.model = profile["model"] or target.model
     if profile["system_prompt"]:
@@ -291,6 +290,16 @@ def recon(target_id: int, db: Session = Depends(get_db),
     target.defences = {"detected": profile["defenses"]}
     target.tools = {"detected": profile["tools"]}
     target.rag_sources = {"detected": profile["rag_sources"]}
+
+    # 코드 위치 스캔 (GitHub token으로 레포 fetch)
+    token = decrypt_token(user.access_token_enc) or ""
+    all_atlas_ids = [
+        "AML.T0054", "AML.T0051.000", "AML.T0051.001",
+        "AML.T0056", "AML.T0057", "AML.T0053",
+    ]
+    target.code_locations = run_code_scan(target.repo_url, all_atlas_ids, token)
+
     db.commit()
     db.refresh(target)
-    return {"target_id": target_id, "profile": profile}
+    return {"target_id": target_id, "profile": profile,
+            "code_locations_count": len(target.code_locations)}
