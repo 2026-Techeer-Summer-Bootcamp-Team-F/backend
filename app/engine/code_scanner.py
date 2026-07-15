@@ -66,6 +66,21 @@ def _format_files(files: dict[str, str], max_chars: int = 12000) -> str:
     return "\n\n".join(parts)
 
 
+def _extract_json(text: str) -> str:
+    """LLM 응답에서 JSON 배열만 뽑아낸다(```json 펜스·앞뒤 설명 제거).
+
+    Haiku가 'Respond ONLY with JSON' 지시를 어기고 ```json ... ``` 로 감싸거나
+    설명을 덧붙이면 json.loads가 깨져 findings=0이 됨 → 배열만 안전 추출.
+    """
+    m = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+    if m:
+        text = m.group(1).strip()
+    i, j = text.find("["), text.rfind("]")
+    if i != -1 and j > i:
+        return text[i:j + 1]
+    return text
+
+
 def _ai_scan(files: dict[str, str], atlas_ids: list[str], api_key: str) -> list[dict]:
     formatted = _format_files(files)
     if not formatted:
@@ -84,6 +99,7 @@ def _ai_scan(files: dict[str, str], atlas_ids: list[str], api_key: str) -> list[
         text = "".join(
             b.text for b in msg.content if getattr(b, "type", "") == "text"
         ).strip()
+        text = _extract_json(text)   # Haiku가 ```json 펜스·설명 붙여도 배열만 추출
         results = json.loads(text)
         if not isinstance(results, list):
             return []
