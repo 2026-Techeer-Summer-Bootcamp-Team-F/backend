@@ -69,8 +69,24 @@ def run_evolution(db, scan_id: int, objective, target, canary,
     atlas_name = technique.name if technique else ""
     attempt_index = 0
 
-    def _record_attempt(prompt, resp, v, generation, parent_id, op):
+    def _publish_started(prompt, generation, op):
+        """발사 직전: 공격 프롬프트만 실어 발행 → 채팅이 공격 말풍선+타이핑을 그린다. — #102
+
+        순번(attempt_index)을 여기서 확정한다(발사 시점). 뒤따르는 attempt가 같은
+        (objective_id, attempt_index)로 나가므로 프론트가 짝을 맞춰 응답·판정을 채운다.
+        attempt_id는 아직 DB 행이 없어 실을 수 없어 상관 키로 쓰지 않는다.
+        """
         nonlocal attempt_index
+        attempt_index += 1
+        attack_prompt, prompt_truncated = _cap(prompt)
+        publish(scan_id, "attempt_started", {
+            "attempt_index": attempt_index, "generation": generation,
+            "mutation_op": op or "seed",
+            "attack_prompt": attack_prompt, "attack_prompt_truncated": prompt_truncated,
+            "atlas": atlas_id, "atlas_name": atlas_name},
+            db=db, objective_id=objective.objective_id)
+
+    def _record_attempt(prompt, resp, v, generation, parent_id, op):
         at = Attempt(
             objective_id=objective.objective_id, parent_id=parent_id,
             prompt_text=prompt, response_text=resp, fitness=v["score"],
@@ -82,7 +98,7 @@ def run_evolution(db, scan_id: int, objective, target, canary,
         metrics.ATTEMPTS.labels(verdict=v["verdict"]).inc()             # 시도(판정별) (#93)
         metrics.ATTEMPT_FITNESS.observe(v["score"])                     # fitness 분포
         metrics.JUDGE_STAGE.labels(stage=v.get("stage", "unknown")).inc()  # 판정 계층
-        attempt_index += 1
+        # 순번은 _publish_started가 발사 시점에 확정 → 여기선 읽기만(같은 값이라 짝이 맞음).
         attack_prompt, prompt_truncated = _cap(prompt)
         target_response, response_truncated = _cap(resp)
         payload = {
@@ -128,6 +144,7 @@ def run_evolution(db, scan_id: int, objective, target, canary,
     population: list = []
     best = 0.0
     for seed in seeds:
+        _publish_started(seed.prompt_text, 0, None)      # 발사 직전 = 채팅 공격 말풍선(#102)
         resp = _fire(actor, seed.prompt_text)
         v = judge(resp, canary)
         at = _record_attempt(seed.prompt_text, resp, v, 0, None, None)
@@ -153,6 +170,7 @@ def run_evolution(db, scan_id: int, objective, target, canary,
         parent = select(population, step)
         op = pick_op()
         child, _improvement = mutate(parent.prompt, op, [n.prompt for n in population])
+        _publish_started(child, gen, op)                  # 발사 직전 = 채팅 공격 말풍선(#102)
         resp = _fire(actor, child)
         v = judge(resp, canary)
         at = _record_attempt(child, resp, v, gen, parent.attempt_id, op)
