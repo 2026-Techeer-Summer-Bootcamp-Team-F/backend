@@ -152,6 +152,10 @@ class HttpActor(Actor):
                         return resp.text[:2000]
                 except AuthConfigError as e:
                     return f"[ACTOR_ERROR] auth_config: {e}"
+                except httpx.HTTPStatusError as e:
+                    # 상태 코드 + 응답 일부를 포함해 원인 파악 용이
+                    body_preview = e.response.text[:120].replace("\n", " ")
+                    return f"[ACTOR_ERROR] HTTP {e.response.status_code}: {body_preview}"
                 except httpx.HTTPError as e:
                     if attempt == self.max_retries - 1:
                         return f"[ACTOR_ERROR] {type(e).__name__}"
