@@ -43,11 +43,11 @@
       "options": { "colorMode": "none", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
     },
     {
-      "id": 5, "type": "timeseries", "title": "요청률 (엔드포인트별, /s)",
+      "id": 5, "type": "timeseries", "title": "요청률 (/s)",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [ { "refId": "A", "expr": "sum by (handler) (rate(http_requests_total{handler!=\"/metrics\"}[5m]))", "legendFormat": "{{handler}}", "datasource": { "type": "prometheus", "uid": "prometheus" } } ],
-      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 8, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum(rate(http_requests_total{handler!=\"/metrics\"}[5m]))", "legendFormat": "요청", "datasource": { "type": "prometheus", "uid": "prometheus" } } ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "color": { "mode": "fixed", "fixedColor": "#8e9aa8" }, "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
     },
     {
