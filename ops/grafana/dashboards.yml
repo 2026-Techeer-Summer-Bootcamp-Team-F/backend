@@ -1,0 +1,11 @@
+# Grafana 대시보드 자동 프로비저닝 — /var/lib/grafana/dashboards 의 JSON을 로드. (#93)
+apiVersion: 1
+providers:
+  - name: redteam
+    orgId: 1
+    folder: "AI Red-Team"
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

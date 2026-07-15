@@ -10,8 +10,10 @@ GPTFuzzer 뼈대 + AutoDAN elitism + UCB 씨앗선택(오픈소스-분석 §6.2)
 """
 import asyncio
 import json
+import time
 from dataclasses import dataclass
 
+from .. import metrics
 from ..mitigations import get_mitigation
 from ..models import Attempt, Finding
 from .actor import make_actor
@@ -33,7 +35,11 @@ class EvolveConfig:
 
 def _fire(actor, prompt: str) -> str:
     """async 액터 send를 동기 워커에서 실행(발사 1회 = 독립 이벤트루프)."""
-    return asyncio.run(actor.send(prompt))
+    t0 = time.monotonic()
+    try:
+        return asyncio.run(actor.send(prompt))
+    finally:
+        metrics.ACTOR_LATENCY.observe(time.monotonic() - t0)   # 표적 응답지연(#93)
 
 
 def run_evolution(db, scan_id: int, objective, target, canary,
@@ -55,6 +61,9 @@ def run_evolution(db, scan_id: int, objective, target, canary,
         db.add(at)
         db.commit()
         db.refresh(at)
+        metrics.ATTEMPTS.labels(verdict=v["verdict"]).inc()             # 시도(판정별) (#93)
+        metrics.ATTEMPT_FITNESS.observe(v["score"])                     # fitness 분포
+        metrics.JUDGE_STAGE.labels(stage=v.get("stage", "unknown")).inc()  # 판정 계층
         payload = {
             "attempt_id": at.attempt_id, "generation": generation,
             "parent_id": parent_id, "verdict": v["verdict"], "score": v["score"],
@@ -78,6 +87,7 @@ def run_evolution(db, scan_id: int, objective, target, canary,
             mitigation=get_mitigation(atlas_id)["summary"]))
         objective.status = "breached"
         db.commit()
+        metrics.BREACHES.labels(atlas=atlas_id or "unknown").inc()   # 침투(기법별) (#93)
         publish(scan_id, "finding", {
             "attempt_id": at.attempt_id, "atlas": atlas_id,
             "severity": "critical" if v.get("canary_hit") else "high",

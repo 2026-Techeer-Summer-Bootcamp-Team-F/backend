@@ -8,12 +8,14 @@
 목표별 진화(retrieve→select→mutate→fire→judge)는 #39에서 run_evolution 배선.
 """
 import logging
+import time
 from datetime import datetime, timezone
 
 from celery.exceptions import SoftTimeLimitExceeded
 from celery.signals import worker_ready
 from sqlalchemy import select as sa_select
 
+from . import metrics
 from .celery_app import celery_app
 from .db import SessionLocal
 from .engine.orchestrator import run_evolution
@@ -105,6 +107,9 @@ def run_scan(scan_id: int) -> dict:
     """
     log.info("[worker] run_scan 수신: scan_id=%s", scan_id)
     db = SessionLocal()
+    started = False        # running까지 진입했는지(메트릭 in_progress/duration 계상 여부)
+    t0 = None
+    result_status = None   # 종료 상태(done/failed/cancelled) — finally에서 카운트
     try:
         scan = db.get(Scan, scan_id)
         if scan is None:
@@ -125,6 +130,10 @@ def run_scan(scan_id: int) -> dict:
         scan.status = "running"
         scan.started_at = _now()
         db.commit()
+        metrics.SCAN_STARTED.inc()               # 스캔 시작 카운트 (#93)
+        metrics.SCANS_IN_PROGRESS.inc()          # 진행중 게이지 +1
+        started = True
+        t0 = time.monotonic()
         publish(scan_id, "log", {"message": "스캔 시작"}, db=db)
 
         # ── 정찰(recon): 표적 코드 프로파일링 → 프로파일 저장 + objectives 반영(#37) ──
@@ -145,6 +154,7 @@ def run_scan(scan_id: int) -> dict:
             db.refresh(scan)
             if scan.status == "cancelled":
                 log.info("[worker] 스캔 취소 감지 — 중단: scan_id=%s", scan_id)
+                result_status = "cancelled"
                 return {"scan_id": scan_id, "status": "cancelled"}
             # 진화 루프(#39): retrieve→select→mutate→fire→judge→elitism. 뚫으면 Finding+breached.
             try:
@@ -164,6 +174,7 @@ def run_scan(scan_id: int) -> dict:
         # ── done ── (취소된 경우 done으로 덮어쓰지 않음)
         db.refresh(scan)
         if scan.status == "cancelled":
+            result_status = "cancelled"
             return {"scan_id": scan_id, "status": "cancelled"}
         scan.status = "done"
         scan.finished_at = _now()
@@ -171,6 +182,7 @@ def run_scan(scan_id: int) -> dict:
         publish(scan_id, "done",
                 {"status": "done", "objectives": len(objectives), "breached": breached}, db=db)
         log.info("[worker] run_scan 완료: scan_id=%s (objectives=%s)", scan_id, len(objectives))
+        result_status = "done"
         return {"scan_id": scan_id, "status": "done"}
 
     except Exception:
@@ -186,6 +198,13 @@ def run_scan(scan_id: int) -> dict:
                 publish(scan_id, "done", {"status": "failed"}, db=db)
         except Exception:
             log.exception("[worker] 실패 상태 기록도 실패: scan_id=%s", scan_id)
+        result_status = "failed"
         return {"scan_id": scan_id, "status": "failed"}
     finally:
+        # 진행중 게이지 -1 + 소요시간 + 종료상태 카운트(모든 종료경로 공통). (#93)
+        if started:
+            metrics.SCANS_IN_PROGRESS.dec()
+            if t0 is not None:
+                metrics.SCAN_DURATION.observe(time.monotonic() - t0)
+            metrics.SCAN_FINISHED.labels(status=result_status or "unknown").inc()
         db.close()
