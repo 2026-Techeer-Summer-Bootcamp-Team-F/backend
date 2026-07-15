@@ -11,3 +11,10 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["backend:8000"]
+
+  # 워커(Celery): 스캔 메트릭(침투·시도·표적지연)은 워커 프로세스에서 발생 →
+  # 워커가 자체 /metrics(:9200)를 노출(celery_app worker_process_init). (#93)
+  - job_name: worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["worker:9200"]

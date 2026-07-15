@@ -1,0 +1,42 @@
+# 관측성 오버레이(경량) — Prometheus + Grafana 만. (#93)
+# 앱 compose와 분리 → EC2에서 함께 얹기:
+#   docker compose -f docker-compose.prod.yml -f docker-compose.obs.yml up -d
+# t3.micro(1GB) 보호: 각 컨테이너 mem_limit + Prometheus 보존 3일로 경량화.
+# Loki(로그)·Jaeger(트레이싱)는 제외(후순위). backend/worker와 같은 기본 네트워크에서
+# 서비스명으로 스크레이프(backend:8000, worker:9200).
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=3d"      # 경량: 3일치만 보관
+      - "--storage.tsdb.retention.size=256MB"
+    volumes:
+      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    mem_limit: 256m
+    restart: unless-stopped
+    # 호스트 포트 노출 X — Grafana(내부망)로만 조회. 디버그 필요 시 9090 임시 오픈.
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./ops/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./ops/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"        # 조회용. SSH 터널 권장(-L 3000:localhost:3000) — SG 미개방 시.
+    mem_limit: 320m
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  grafana_data:

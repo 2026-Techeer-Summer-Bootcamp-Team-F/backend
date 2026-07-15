@@ -11,6 +11,7 @@ RabbitMQ, 결과저장(result backend)은 Redis (2026-07-10 브로커 분리 결
   큐잉  = from app.tasks import run_scan; run_scan.delay(scan_id)
 """
 from celery import Celery
+from celery.signals import worker_process_init
 
 from .config import settings
 
@@ -38,3 +39,16 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
 )
+
+
+# 관측성(#93): 스캔 메트릭은 이 워커 프로세스에서 증가한다 → 워커가 자체 /metrics를
+# 노출해야 Prometheus가 긁는다(backend의 /metrics엔 안 나옴). worker_process_init은
+# 태스크가 실제로 도는 자식 프로세스에서 발화 → 그 프로세스의 카운터가 노출된다.
+# concurrency=1이라 자식 1개 = 포트 1개. prometheus_client 없거나 포트충돌이면 조용히 skip.
+@worker_process_init.connect
+def _start_metrics_server(**_):
+    try:
+        from prometheus_client import start_http_server
+        start_http_server(9200)
+    except Exception:  # noqa: BLE001 - 미설치/포트충돌이어도 워커는 계속 동작
+        pass

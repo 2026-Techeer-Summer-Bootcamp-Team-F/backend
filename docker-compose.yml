@@ -106,6 +106,8 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
     volumes:
       - ./ops/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./ops/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     ports:
       - "3001:3000"          # 호스트 3001 (3000은 다른 프로젝트 점유). 컨테이너 내부는 3000
