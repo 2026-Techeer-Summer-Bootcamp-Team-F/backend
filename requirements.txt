@@ -20,6 +20,9 @@ redis>=5.0                 # Celery result backend · rate-limit 카운터 · �
 # 판정 폴백(judge Tier3)·리포트 AI 요약용 Claude Haiku. — 계획 §4-4·§7
 anthropic>=0.40
 
+# 정적 보안 스캔(Phase2): 코드스캐너가 결정론적 탐지 결과를 AI 근거로 주입(하드코딩 비밀·eval 등)
+bandit>=1.7
+
 # 관측성: FastAPI /metrics 노출(Prometheus 스크레이프). — ARCHITECTURE.md §3.11
 prometheus-fastapi-instrumentator>=7.0
 
