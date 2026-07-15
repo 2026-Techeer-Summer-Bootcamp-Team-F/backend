@@ -43,7 +43,7 @@ _TYPE_TO_ATLAS = {
     "direct_injection": "AML.T0051.000",
     "indirect_injection": "AML.T0051.001",
     "rag_injection": "AML.T0051.001",
-    "data_leakage": "AML.T0056",
+    "data_leakage": "AML.T0057",
     "system_prompt_leak": "AML.T0056",
     "prompt_leak": "AML.T0056",
     "tool_misuse": "AML.T0053",
