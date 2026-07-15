@@ -55,11 +55,14 @@ def run_evolution(db, scan_id: int, objective, target, canary,
         db.add(at)
         db.commit()
         db.refresh(at)
-        publish(scan_id, "attempt", {
+        payload = {
             "attempt_id": at.attempt_id, "generation": generation,
             "parent_id": parent_id, "verdict": v["verdict"], "score": v["score"],
             "mutation_op": op or "seed", "atlas": atlas_id,
-            "prompt": prompt[:200]}, db=db, objective_id=objective.objective_id)
+            "prompt": prompt[:200]}
+        if v["verdict"] == "error":
+            payload["error"] = resp[:200]
+        publish(scan_id, "attempt", payload, db=db, objective_id=objective.objective_id)
         return at
 
     def _record_finding(at, v):
