@@ -27,7 +27,8 @@ _SYSTEM = (
 )
 
 
-def _build_prompt(files_with_lines: str, atlas_ids: list[str]) -> str:
+def _build_prompt(files_with_lines: str, atlas_ids: list[str],
+                  static_findings: list = None) -> str:
     from ..mitigations import get_mitigation
     # 기법 설명 + ATLAS/OWASP 정본 권고(mitigations.py)를 AI에 제공 → fix가 표준 권고와 정렬되게
     techniques = []
@@ -36,11 +37,22 @@ def _build_prompt(files_with_lines: str, atlas_ids: list[str]) -> str:
         steps = "; ".join(get_mitigation(aid).get("steps", [])[:4])
         techniques.append(f"- {aid}: {desc}\n  ATLAS/OWASP 권고: {steps}")
     tech_block = "\n".join(techniques)
+    # Phase2: 정적 분석기(Bandit)가 확실히 잡은 것을 근거로 제공 → AI가 그걸 ATLAS로 매핑+정밀 fix
+    static_block = ""
+    if static_findings:
+        rows = "\n".join(
+            f"- {s['file']}:{s['line']} [{s.get('test', '')}/{s.get('severity', '')}] {s.get('issue', '')}"
+            for s in static_findings[:15])
+        static_block = (
+            "\nA static analyzer (Bandit) already flagged these lines — corroborate them, map each "
+            "to the correct ATLAS technique, and give a fix (prioritize these over guesses):\n"
+            f"{rows}\n")
     return (
         f"You are a security code reviewer. For each MITRE ATLAS technique below, find the "
         f"vulnerable line AND propose a concrete fix tailored to THIS app's actual code, "
         f"aligned with the ATLAS/OWASP 권고 given:\n"
-        f"{tech_block}\n\n"
+        f"{tech_block}\n"
+        f"{static_block}\n"
         f"Source code (format: filename > line_number: code):\n"
         f"{files_with_lines}\n\n"
         f"Return a JSON array. Each finding:\n"
@@ -102,7 +114,47 @@ def _context_lines(files: dict[str, str], path: str, line: int, radius: int = 3)
     return [{"line": k + 1, "code": lines[k]} for k in range(lo, hi)]
 
 
-def _ai_scan(files: dict[str, str], atlas_ids: list[str], api_key: str) -> list[dict]:
+def _bandit_scan(files: dict[str, str]) -> list[dict]:
+    """Bandit 정적 보안 스캔(파이썬) — 하드코딩 비밀·eval·약한 암호 등을 결정론적으로 탐지.
+
+    임시 디렉토리에 파이썬 파일을 쓰고 `bandit -f json` 실행 → [{file,line,issue,severity,test}].
+    Bandit 미설치·타임아웃·파싱 실패 시 [] 반환(AI 단독으로 폴백). Phase2.
+    """
+    import os
+    import subprocess
+    import tempfile
+    py = {p: s for p, s in files.items() if p.endswith(".py")}
+    if not py:
+        return []
+    out = []
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            base_to_orig = {}
+            for p, s in py.items():
+                base = os.path.basename(p)
+                base_to_orig[base] = p
+                with open(os.path.join(d, base), "w", encoding="utf-8") as f:
+                    f.write(s)
+            proc = subprocess.run(
+                ["bandit", "-r", d, "-f", "json", "-q"],
+                capture_output=True, text=True, timeout=30)
+            data = json.loads(proc.stdout or "{}")
+            for r in data.get("results", []):
+                base = os.path.basename(r.get("filename", ""))
+                out.append({
+                    "file": base_to_orig.get(base, base),
+                    "line": r.get("line_number", 0),
+                    "issue": r.get("issue_text", ""),
+                    "severity": r.get("issue_severity", ""),
+                    "test": r.get("test_id", ""),
+                })
+    except Exception as e:   # noqa: BLE001 - 미설치/타임아웃/파싱 → AI 단독 폴백
+        log.info("code_scanner: Bandit 스킵(%s)", e)
+    return out
+
+
+def _ai_scan(files: dict[str, str], atlas_ids: list[str], api_key: str,
+             static_findings: list = None) -> list[dict]:
     formatted = _format_files(files)
     if not formatted:
         return []
@@ -115,7 +167,8 @@ def _ai_scan(files: dict[str, str], atlas_ids: list[str], api_key: str) -> list[
             model=settings.attacker_model,
             max_tokens=2048,   # fix 필드 추가로 상향
             system=_SYSTEM,
-            messages=[{"role": "user", "content": _build_prompt(formatted, atlas_ids)}],
+            messages=[{"role": "user",
+                       "content": _build_prompt(formatted, atlas_ids, static_findings)}],
         )
         text = "".join(
             b.text for b in msg.content if getattr(b, "type", "") == "text"
@@ -158,7 +211,10 @@ def run_code_scan(repo_url: str, atlas_ids: list[str], token: str = "") -> list[
         if not settings.anthropic_api_key:
             log.info("code_scanner: API 키 없음 — AI 분석 건너뜀")
             return []
-        return _ai_scan(files, atlas_ids, settings.anthropic_api_key)
+        static = _bandit_scan(files)   # Phase2: 결정론적 정적 탐지로 AI 근거 보강
+        if static:
+            log.info("code_scanner: Bandit %d건 → AI 근거로 주입", len(static))
+        return _ai_scan(files, atlas_ids, settings.anthropic_api_key, static)
     except Exception as e:   # noqa: BLE001
         log.warning("code_scanner: 스캔 실패(%s): %s", repo_url, e)
         return []
