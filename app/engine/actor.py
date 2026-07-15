@@ -45,6 +45,7 @@ class HttpActor(Actor):
         self.response_path = config.get("response_path", "reply")
         self.delay = float(config.get("delay", 0))
         self.max_retries = int(config.get("max_retries", 4))
+        self.timeout = float(config.get("timeout", 90))  # Ollama 등 로컬 LLM은 생성에 60s+ 소요
         # 인증: config.auth 있으면 TokenProvider 생성(없으면 None). cache_key로 스캔당 1회 발급 공유.
         self.auth = make_provider(config.get("auth"), cache_key or self.url)
         # 세션(멀티턴): 응답에서 세션ID 추출→다음 요청 재주입해 대화 상태 유지(#11, 크레센도 토대).
@@ -114,7 +115,7 @@ class HttpActor(Actor):
             await asyncio.sleep(self.delay)
         body = self._build_body(prompt)
         reauthed = False  # 401 강제 재인증은 1회만(무한루프 금지)
-        async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, transport=self._transport) as client:
             for attempt in range(self.max_retries):
                 try:
                     # 요청 직전 토큰 주입 — inject.in=header|query|body 지원(토큰 갱신 반영) + 세션 재주입
