@@ -28,17 +28,27 @@ _SYSTEM = (
 
 
 def _build_prompt(files_with_lines: str, atlas_ids: list[str]) -> str:
-    techniques = "\n".join(
-        f"- {aid}: {_ATLAS_DESCRIPTIONS.get(aid, aid)}" for aid in atlas_ids
-    )
+    from ..mitigations import get_mitigation
+    # 기법 설명 + ATLAS/OWASP 정본 권고(mitigations.py)를 AI에 제공 → fix가 표준 권고와 정렬되게
+    techniques = []
+    for aid in atlas_ids:
+        desc = _ATLAS_DESCRIPTIONS.get(aid, aid)
+        steps = "; ".join(get_mitigation(aid).get("steps", [])[:4])
+        techniques.append(f"- {aid}: {desc}\n  ATLAS/OWASP 권고: {steps}")
+    tech_block = "\n".join(techniques)
     return (
-        f"Find vulnerabilities in this code for the following MITRE ATLAS techniques:\n"
-        f"{techniques}\n\n"
+        f"You are a security code reviewer. For each MITRE ATLAS technique below, find the "
+        f"vulnerable line AND propose a concrete fix tailored to THIS app's actual code, "
+        f"aligned with the ATLAS/OWASP 권고 given:\n"
+        f"{tech_block}\n\n"
         f"Source code (format: filename > line_number: code):\n"
         f"{files_with_lines}\n\n"
-        f"Return a JSON array of findings. Each finding:\n"
-        f'{{"file":"filename","line":N,"snippet":"exact line text","atlas_id":"AML.Txxxx","reason":"why vulnerable in Korean (50 chars max)"}}\n'
-        f"reason must be plain text only — no markdown, no bold, no dashes, no bullets.\n"
+        f"Return a JSON array. Each finding:\n"
+        f'{{"file":"filename","line":N,"snippet":"exact line text","atlas_id":"AML.Txxxx",'
+        f'"reason":"why vulnerable, Korean (60 chars max)",'
+        f'"fix":"how to fix THIS specific code, Korean — reference the ATLAS 권고, '
+        f'may include a short corrected code line (140 chars max)"}}\n'
+        f"reason/fix: plain text only — no markdown, no bold, no bullets.\n"
         f"Return [] if nothing found. One finding per atlas_id maximum."
     )
 
@@ -81,6 +91,17 @@ def _extract_json(text: str) -> str:
     return text
 
 
+def _context_lines(files: dict[str, str], path: str, line: int, radius: int = 3) -> list:
+    """취약 라인 앞뒤 ±radius줄을 [{line, code}]로 반환(프론트에서 접었다 펴기용)."""
+    src = files.get(path, "")
+    if not src or line < 1:
+        return []
+    lines = src.splitlines()
+    lo = max(0, line - 1 - radius)
+    hi = min(len(lines), line + radius)
+    return [{"line": k + 1, "code": lines[k]} for k in range(lo, hi)]
+
+
 def _ai_scan(files: dict[str, str], atlas_ids: list[str], api_key: str) -> list[dict]:
     formatted = _format_files(files)
     if not formatted:
@@ -92,7 +113,7 @@ def _ai_scan(files: dict[str, str], atlas_ids: list[str], api_key: str) -> list[
         client = anthropic.Anthropic(api_key=api_key)
         msg = client.messages.create(
             model=settings.attacker_model,
-            max_tokens=1024,
+            max_tokens=2048,   # fix 필드 추가로 상향
             system=_SYSTEM,
             messages=[{"role": "user", "content": _build_prompt(formatted, atlas_ids)}],
         )
@@ -111,6 +132,9 @@ def _ai_scan(files: dict[str, str], atlas_ids: list[str], api_key: str) -> list[
                 "snippet": str(r.get("snippet", ""))[:160],
                 "atlas_id": r.get("atlas_id", ""),
                 "reason": _strip_markdown(r.get("reason", "")),
+                "fix": _strip_markdown(r.get("fix", "")),                     # 앱 맞춤 수정 제안(#111)
+                "context": _context_lines(files, r.get("file", ""),          # 앞뒤 코드(±3줄)
+                                          int(r.get("line", 0))),
             }
             for r in results
             if isinstance(r, dict) and r.get("atlas_id") in valid_ids
