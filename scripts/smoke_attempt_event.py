@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-"""attempt 이벤트 신규 필드 스모크 — #97. 실시간 공격 채팅용 페이로드 검증.
+"""attempt 이벤트 스모크 — #97(신규 8필드) + #102(attempt_started 쌍). 채팅용 페이로드 검증.
 
-검증: ① 신규 8필드가 모든 attempt(씨앗·safe·breach·error)에 실림 ② 기존 12필드 불변
+검증: ① 신규 8필드가 모든 attempt(씨앗·safe·breach·error)에 실림 ② 기존 필드 불변
 ③ 4000자 초과 시 잘리고 *_truncated=true ④ attempt_index 목표별 1부터 증가
-⑤ breach면 canary_triggered=true + flag_token=카나리 ⑥ atlas_name 조회는 목표당 1회(N+1 없음).
+⑤ breach면 canary_triggered=true + flag_token=카나리 ⑥ atlas_name 조회는 목표당 1회(N+1 없음)
+⑦ 발사마다 attempt_started→attempt 쌍이 같은 (objective_id, attempt_index)로 발행되고
+   started에는 응답·판정 필드가 없음(액터 오류 경로 포함).
 
 액터·씨앗은 스텁(표적/코퍼스 없이 오프라인 실행). LLM 호출 없음 — 판정 점수를
 Tier-3 에스컬레이션 구간(0.45~0.8) 밖으로 설계했다.
@@ -52,11 +54,26 @@ class FakeActor:
         return self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
 
 
-def _attempt_events(db, scan_id):
-    """해당 스캔의 attempt 이벤트 페이로드를 순서대로 반환."""
+def _events(db, scan_id, event_type):
+    """해당 스캔의 특정 event_type 페이로드를 발행 순서대로 반환."""
     rows = (db.query(ScanEvent).filter_by(scan_id=scan_id)
               .order_by(ScanEvent.scan_events_id).all())
-    return [r.payload for r in rows if r.payload.get("event") == "attempt"]
+    return [r.payload for r in rows if r.payload.get("event") == event_type]
+
+
+def _attempt_events(db, scan_id):
+    """해당 스캔의 attempt 이벤트 페이로드를 순서대로 반환."""
+    return _events(db, scan_id, "attempt")
+
+
+def _event_sequence(db, scan_id, objective_id):
+    """목표 1개의 (event, attempt_index) 발행 순서 — started→attempt 쌍 검증용(#102)."""
+    rows = (db.query(ScanEvent).filter_by(scan_id=scan_id)
+              .order_by(ScanEvent.scan_events_id).all())
+    return [(r.payload["event"], r.payload.get("attempt_index"))
+            for r in rows
+            if r.payload.get("event") in ("attempt_started", "attempt")
+            and r.payload.get("objective_id") == objective_id]
 
 
 def _run(db, scan_id, target, prompts, responses):
@@ -180,7 +197,29 @@ def main():
         assert lookups == 1, f"AtlasTechnique 조회 {lookups}회 (기대 1회 — N+1)"
         print(f"⑦ AtlasTechnique 조회 {lookups}회 (시도 3건, N+1 없음)")
 
-        # ⑧ error(액터 오류): 신규 필드가 여전히 전부 실리고 카나리는 False
+        # ⑧ attempt_started(#102): 발사마다 started→attempt 쌍이 이 순서로, 같은 순번으로
+        started = [e for e in _events(db, scan.scan_id, "attempt_started")
+                   if e["objective_id"] == obj_id]
+        assert len(started) == 3, f"attempt_started {len(started)}건 (기대 3)"
+        seq = _event_sequence(db, scan.scan_id, obj_id)
+        expected = [("attempt_started", 1), ("attempt", 1),
+                    ("attempt_started", 2), ("attempt", 2),
+                    ("attempt_started", 3), ("attempt", 3)]
+        assert seq == expected, f"이벤트 순서/순번 불일치: {seq}"
+        for s, a in zip(started, events):
+            assert s["attempt_index"] == a["attempt_index"], "쌍의 attempt_index 불일치"
+            assert s["attack_prompt"] == a["attack_prompt"], "쌍의 attack_prompt 불일치"
+            assert s["generation"] == a["generation"], "쌍의 generation 불일치"
+            assert s["mutation_op"] == a["mutation_op"], "쌍의 mutation_op 불일치"
+            assert s["atlas"] == a["atlas"] and s["atlas_name"] == a["atlas_name"]
+        # started는 발사 전이라 응답·판정 필드가 없어야 한다(있으면 계약 위반)
+        for s in started:
+            for f in ("verdict", "score", "target_response", "attempt_id", "flag_token"):
+                assert f not in s, f"attempt_started에 응답/판정 필드 유출: {f}"
+        assert started[1]["attack_prompt_truncated"] is False
+        print("⑧ started→attempt 쌍 3세트 · 순번/프롬프트 일치 · 응답필드 미포함")
+
+        # ⑨ error(액터 오류): 신규 필드가 여전히 전부 실리고 카나리는 False
         err_obj_id, _ = _run(db, scan.scan_id, t, ["ping"], ["[ACTOR_ERROR] connection refused"])
         err = next(e for e in _attempt_events(db, scan.scan_id) if e["objective_id"] == err_obj_id)
         assert err["verdict"] == "error", f"verdict={err['verdict']}"
@@ -189,9 +228,12 @@ def main():
         assert err["canary_triggered"] is False and err["flag_token"] is None
         assert err["attempt_index"] == 1, "목표가 바뀌면 attempt_index는 1부터"
         assert "error" in err, "기존 error 필드 누락"
-        print("⑧ error: 신규필드 전건 존재 · attempt_index 목표별 리셋 확인")
+        # 액터가 터져도 started는 이미 나갔어야 한다(채팅에 공격 말풍선이 남아야 함)
+        assert _event_sequence(db, scan.scan_id, err_obj_id) == [
+            ("attempt_started", 1), ("attempt", 1)], "error 경로에서 쌍이 깨짐"
+        print("⑨ error: 신규필드 전건 존재 · attempt_index 목표별 리셋 · 쌍 유지 확인")
 
-        print("\n✅ smoke_attempt_event 통과 — #97 신규 8필드 + 하위호환 검증 완료")
+        print("\n✅ smoke_attempt_event 통과 — #97 신규 8필드 + #102 started 쌍 검증 완료")
 
     finally:
         orchestrator.make_actor, orchestrator.retrieve_seeds = real_make_actor, real_retrieve
