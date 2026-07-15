@@ -6,15 +6,16 @@ AI 요약은 키 없으면 템플릿, ANTHROPIC_API_KEY 있으면 Haiku로 자�
 """
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy import select as sa_select
 from sqlalchemy.orm import Session
 
+from ..authz import scan_owned_or_404
 from ..config import settings
 from ..db import get_db
 from ..deps import get_current_user
 from ..mitigations import get_mitigation
-from ..models import Attempt, AtlasTechnique, Finding, Objective, Scan, TargetProject, User
+from ..models import Attempt, AtlasTechnique, Finding, Objective, TargetProject, User
 
 router = APIRouter(prefix="/scans", tags=["results"])
 
@@ -39,13 +40,6 @@ def _heat_status(status: str) -> str:
     return "safe"
 
 
-def _scan_or_404(db: Session, scan_id: int) -> Scan:
-    scan = db.get(Scan, scan_id)
-    if scan is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "스캔 없음")
-    return scan
-
-
 def _collect(db: Session, scan_id: int):
     """스캔의 objectives / attempts / findings를 한 번에 모아 반환(조인 재사용)."""
     objs = db.scalars(sa_select(Objective).where(Objective.scan_id == scan_id)).all()
@@ -60,9 +54,9 @@ def _collect(db: Session, scan_id: int):
 
 @router.get("/{scan_id}/report")
 def report(scan_id: int, db: Session = Depends(get_db),
-           _: User = Depends(get_current_user)):
-    """대시보드 통계: 목표/시도/침투/취약점 + 위험도(심각도 가중). — §5"""
-    scan = _scan_or_404(db, scan_id)
+           user: User = Depends(get_current_user)):
+    """대시보드 통계: 목표/시도/침투/취약점 + 위험도(심각도 가중). 소유권 검증(#91). — §5"""
+    scan = scan_owned_or_404(db, scan_id, user)
     objs, attempts, findings = _collect(db, scan_id)
     breached_objs = sum(1 for o in objs if o.status == "breached")
     sev_counts: dict = {}
@@ -93,9 +87,9 @@ def report(scan_id: int, db: Session = Depends(get_db),
 
 @router.get("/{scan_id}/heatmap")
 def heatmap(scan_id: int, db: Session = Depends(get_db),
-            _: User = Depends(get_current_user)):
-    """ATLAS 기법별 침투 히트맵 — objective별 상태 + 최고 fitness. — §5"""
-    _scan_or_404(db, scan_id)
+            user: User = Depends(get_current_user)):
+    """ATLAS 기법별 침투 히트맵 — objective별 상태 + 최고 fitness. 소유권 검증(#91). — §5"""
+    scan_owned_or_404(db, scan_id, user)
     objs, attempts, _ = _collect(db, scan_id)
     # objective별 최고 fitness + 시도 횟수
     best: dict = {}
@@ -135,9 +129,9 @@ def heatmap(scan_id: int, db: Session = Depends(get_db),
 
 @router.get("/{scan_id}/findings")
 def findings(scan_id: int, db: Session = Depends(get_db),
-             _: User = Depends(get_current_user)):
-    """취약점 목록 + 증거 + 완화책(finding→attempt→objective→atlas 조인). — §5"""
-    _scan_or_404(db, scan_id)
+             user: User = Depends(get_current_user)):
+    """취약점 목록 + 증거 + 완화책(finding→attempt→objective→atlas 조인). 소유권 검증(#91). — §5"""
+    scan_owned_or_404(db, scan_id, user)
     _, attempts, finds = _collect(db, scan_id)
     at_by_id = {a.attempt_id: a for a in attempts}
     out = []
@@ -201,19 +195,19 @@ def _build_summary(scan, rep, finds_detail) -> dict:
 
 @router.get("/{scan_id}/summary")
 def ai_summary(scan_id: int, db: Session = Depends(get_db),
-               _: User = Depends(get_current_user)):
-    """리포트 AI 요약 — 키 없으면 통계 템플릿, 있으면 Haiku. — §5·§7"""
-    scan = _scan_or_404(db, scan_id)
-    rep = report(scan_id, db)
-    finds = findings(scan_id, db)
+               user: User = Depends(get_current_user)):
+    """리포트 AI 요약 — 키 없으면 통계 템플릿, 있으면 Haiku. 소유권 검증(#91). — §5·§7"""
+    scan = scan_owned_or_404(db, scan_id, user)
+    rep = report(scan_id, db, user)       # 내부 재사용 — user 전달(소유권 재검증)
+    finds = findings(scan_id, db, user)
     return {"scan_id": scan_id, **_build_summary(scan, rep, finds)}
 
 
 @router.get("/{scan_id}/code-locations")
 def code_locations(scan_id: int, db: Session = Depends(get_db),
-                   _: User = Depends(get_current_user)):
-    """스캔에서 테스트한 ATLAS 기법에 해당하는 취약 코드 위치 반환."""
-    scan = _scan_or_404(db, scan_id)
+                   user: User = Depends(get_current_user)):
+    """스캔에서 테스트한 ATLAS 기법에 해당하는 취약 코드 위치 반환. 소유권 검증(#91)."""
+    scan = scan_owned_or_404(db, scan_id, user)
     target = db.get(TargetProject, scan.target_id)
     if not target:
         return []

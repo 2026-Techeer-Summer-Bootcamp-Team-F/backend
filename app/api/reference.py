@@ -7,10 +7,11 @@
 - GET /attempts/{id}        : 시도 상세 — 프론트 EvidenceViewer
 전부 읽기 전용. 린 스키마로 구현(마이그레이션 없음).
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy import select as sa_select
 from sqlalchemy.orm import Session
 
+from ..authz import attempt_owned_or_404, objective_owned_or_404
 from ..db import get_db
 from ..deps import get_current_user
 from ..models import Attempt, AtlasTechnique, Objective, User
@@ -52,11 +53,9 @@ def atlas(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
 
 @router.get("/objectives/{objective_id}/tree")
 def objective_tree(objective_id: int, db: Session = Depends(get_db),
-                   _: User = Depends(get_current_user)):
-    """진화 트리 — 한 목표의 attempt 계보(parent_id). 프론트가 트리로 렌더. — §5"""
-    obj = db.get(Objective, objective_id)
-    if obj is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "목표 없음")
+                   user: User = Depends(get_current_user)):
+    """진화 트리 — 한 목표의 attempt 계보(parent_id). 프론트가 트리로 렌더. 소유권 검증(#91). — §5"""
+    obj = objective_owned_or_404(db, objective_id, user)
     attempts = db.scalars(
         sa_select(Attempt).where(Attempt.objective_id == objective_id)
         .order_by(Attempt.attempt_id)).all()
@@ -72,11 +71,9 @@ def objective_tree(objective_id: int, db: Session = Depends(get_db),
 
 @router.get("/attempts/{attempt_id}")
 def attempt_detail(attempt_id: int, db: Session = Depends(get_db),
-                   _: User = Depends(get_current_user)):
-    """시도 상세 — 프롬프트·응답·판정·계보. 프론트 EvidenceViewer. — §5"""
-    at = db.get(Attempt, attempt_id)
-    if at is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "시도 없음")
+                   user: User = Depends(get_current_user)):
+    """시도 상세 — 프롬프트·응답·판정·계보. 프론트 EvidenceViewer. 소유권 검증(#91). — §5"""
+    at = attempt_owned_or_404(db, attempt_id, user)
     obj = db.get(Objective, at.objective_id)
     return {
         "attempt_id": at.attempt_id, "objective_id": at.objective_id,
