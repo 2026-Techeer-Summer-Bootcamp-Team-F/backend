@@ -47,6 +47,7 @@ class TargetProject(Base):
     defences: Mapped[dict] = mapped_column(JSON, default=dict)
     tools: Mapped[dict] = mapped_column(JSON, default=dict)
     rag_sources: Mapped[dict] = mapped_column(JSON, default=dict)
+    code_locations: Mapped[list] = mapped_column(JSON, default=list)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # soft-delete
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
