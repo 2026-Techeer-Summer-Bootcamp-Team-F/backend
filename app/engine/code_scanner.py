@@ -13,9 +13,15 @@ log = logging.getLogger("redteam.code_scanner")
 # ── ATLAS 기법별 탐지 패턴 (pattern, hint) ──
 _PATTERNS: dict[str, list[tuple[re.Pattern, str]]] = {
     "AML.T0054": [
-        (re.compile(r"(?i)\b(FLAG|PASSWORD|SECRET|API_KEY|CREDENTIAL|INTERNAL_KEY)\s*=\s*[\"']"),
+        (re.compile(r"(?i)\b(FLAG|PASSWORD|SECRET|API_?KEY|CREDENTIAL|INTERNAL_KEY|TOKEN)\s*=\s*[\"']"),
          "비밀 상수가 코드에 하드코딩됨"),
-        (re.compile(r"(?i)f[\"'].*?\{(FLAG|PASSWORD|SECRET|API_KEY|CREDENTIAL|PII)\}"),
+        # os.environ.get("X_TOKEN", "비밀기본값") — 배포 시 노출되는 하드코딩 기본값
+        (re.compile(r"(?i)os\.environ\.get\(\s*[\"'][^\"']*(TOKEN|PASSWORD|SECRET|KEY|CREDENTIAL|FLAG)[^\"']*[\"']\s*,\s*[\"']"),
+         "비밀이 os.environ.get 기본값으로 하드코딩됨(배포 시 노출)"),
+        (re.compile(r"FLAG\{"), "카나리/비밀 FLAG가 코드에 하드코딩됨"),
+        (re.compile(r"[\"']sk-[A-Za-z0-9_-]{6,}"), "API 키가 코드에 하드코딩됨"),
+        # 시스템프롬프트 f-string에 비밀 변수 직접 삽입(변수명이 *_TOKEN/*_KEY/*_PASSWORD 등)
+        (re.compile(r"(?i)f[\"'].*?\{_?[A-Za-z0-9_]*(TOKEN|PASSWORD|SECRET|KEY|CREDENTIAL|FLAG)[A-Za-z0-9_]*[^}]*\}"),
          "시스템프롬프트 f-string에 비밀값 직접 삽입"),
     ],
     "AML.T0051.000": [
@@ -27,12 +33,19 @@ _PATTERNS: dict[str, list[tuple[re.Pattern, str]]] = {
     "AML.T0056": [
         (re.compile(r"(?i)(?:print|log|logger)\s*\(.*?(system_prompt|SYSTEM_PROMPT)"),
          "시스템프롬프트가 로그/출력에 노출될 수 있음"),
+        (re.compile(r"(?i)\b(SYSTEM_PROMPT|system_prompt)\s*=\s*[\(\"'f]"),
+         "시스템프롬프트 정의 — 비밀·내부정보 포함 시 추출 공격에 노출"),
     ],
     "AML.T0057": [
         (re.compile(r"(?i)\b(CUSTOMER_PII|PII|USER_DATA|CUSTOMER_DATA)\s*=\s*[\"']"),
          "PII 데이터가 코드에 하드코딩됨"),
-        (re.compile(r"(?i)f[\"'].*?\{(PII|CUSTOMER_PII|customer_pii|user_data)\}"),
-         "PII 데이터가 LLM 컨텍스트에 직접 삽입됨"),
+        (re.compile(r"\b\d{4}-\d{4}-\d{4}-\d{4}\b"),
+         "카드번호(PII)가 코드에 하드코딩됨"),
+        # os.environ.get("DEMO_USER_...", "홍길동") — PII 하드코딩 기본값
+        (re.compile(r"(?i)os\.environ\.get\(\s*[\"'][^\"']*(DEMO_USER|CUSTOMER|_PII|CARD|BALANCE|USER_NAME)[^\"']*[\"']\s*,\s*[\"']"),
+         "PII가 os.environ.get 기본값으로 하드코딩됨"),
+        (re.compile(r"(?i)f[\"'].*?\{_?(ACTIVE_USER|CUSTOMER|PII|USER_DATA)[^}]*\}"),
+         "PII가 LLM 컨텍스트(f-string)에 직접 삽입됨"),
     ],
     "AML.T0053": [
         (re.compile(r"(?i)def\s+(transfer|send_money|payment|refund|delete_user|execute_sql|wire)\s*\("),
