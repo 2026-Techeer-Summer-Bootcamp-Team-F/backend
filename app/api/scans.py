@@ -13,6 +13,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import select as sa_select
 from sqlalchemy.orm import Session
 
+from ..authz import scan_owned_by_uid, scan_owned_or_404
 from ..db import SessionLocal, get_db
 from ..deps import get_current_user
 from ..models import (
@@ -52,14 +53,15 @@ def _resolve_objective_atlas(db: Session, config: dict) -> list:
 
 @router.post("", status_code=202)
 def start_scan(body: ScanCreate, db: Session = Depends(get_db),
-               _: User = Depends(get_current_user)):
+               user: User = Depends(get_current_user)):
     """스캔 트리거: scans 저장(pending) → objectives 저장 → Celery 큐잉 → 202.
 
-    TODO(auth): 소유권 검증(get_current_user)은 팀원 JWT 완성 후. 지금은 표적 존재만
-    확인하고 관통(껍데기 데모). — 계획 §1의 크로스팀 의존성.
+    소유권(#91): 본인 소유의 표적에만 스캔을 걸 수 있다. 남의/없는/삭제된 표적은 404
+    (존재 은닉).
     """
     target = db.get(TargetProject, body.target_id)
-    if target is None or target.deleted_at is not None:
+    if (target is None or target.deleted_at is not None
+            or target.user_id != user.user_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "표적 프로젝트 없음")
 
     scan = Scan(target_id=target.target_id, status="pending", config=body.config)
@@ -80,20 +82,22 @@ def start_scan(body: ScanCreate, db: Session = Depends(get_db),
 
 @router.get("")
 def list_scans(db: Session = Depends(get_db),
-               _: User = Depends(get_current_user)):
-    """내 스캔 목록(대시보드). TODO(auth): user 필터. 지금은 최신순 전체."""
-    scans = db.scalars(sa_select(Scan).order_by(Scan.scan_id.desc()).limit(50)).all()
+               user: User = Depends(get_current_user)):
+    """내 스캔 목록(대시보드). 소유권(#91): 본인 표적의 스캔만 반환(최신순)."""
+    scans = db.scalars(
+        sa_select(Scan)
+        .join(TargetProject, Scan.target_id == TargetProject.target_id)
+        .where(TargetProject.user_id == user.user_id)
+        .order_by(Scan.scan_id.desc()).limit(50)).all()
     return [{"scan_id": s.scan_id, "target_id": s.target_id, "status": s.status,
              "created_at": s.created_at} for s in scans]
 
 
 @router.get("/{scan_id}")
 def get_scan(scan_id: int, db: Session = Depends(get_db),
-             _: User = Depends(get_current_user)):
-    """스캔 1건: 상태 + 진행 + objectives 개수/상태(진행상황 관찰용)."""
-    scan = db.get(Scan, scan_id)
-    if scan is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "스캔 없음")
+             user: User = Depends(get_current_user)):
+    """스캔 1건: 상태 + 진행 + objectives 개수/상태(진행상황 관찰용). 소유권 검증(#91)."""
+    scan = scan_owned_or_404(db, scan_id, user)
     objectives = db.scalars(sa_select(Objective).where(Objective.scan_id == scan_id)).all()
     return {
         "scan_id": scan.scan_id, "target_id": scan.target_id, "status": scan.status,
@@ -219,11 +223,12 @@ def delete_scan(
 
 @router.post("/{scan_id}/cancel")
 def cancel_scan(scan_id: int, db: Session = Depends(get_db),
-                _: User = Depends(get_current_user)):
-    """스캔 취소 — status=cancelled로 표시. 워커(run_scan)가 목표 사이에서 감지해 중단. — §4"""
-    scan = db.get(Scan, scan_id)
-    if scan is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "스캔 없음")
+                user: User = Depends(get_current_user)):
+    """스캔 취소 — status=cancelled로 표시. 워커(run_scan)가 목표 사이에서 감지해 중단. — §4
+
+    소유권 검증(#91): 본인 스캔만 취소 가능(남의/없는 스캔은 404).
+    """
+    scan = scan_owned_or_404(db, scan_id, user)
     if scan.status in ("done", "failed", "cancelled"):
         return {"scan_id": scan_id, "status": scan.status, "stop_reason": "already_terminal"}
     scan.status = "cancelled"
@@ -252,20 +257,23 @@ async def scan_stream(scan_id: int, request: Request, after: int = 0, token: str
     # SSE 인증: EventSource는 Authorization 헤더를 못 실으므로 `?token=<jwt>`로 검증(#41).
     # 없거나 무효면 401. (프론트 RunScanPage가 이미 ?token=로 붙여 보냄)
     try:
-        decode_access_token(token)
+        payload = decode_access_token(token)
     except Exception:  # noqa: BLE001 - 만료/무효/빈값 전부 401
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "토큰 없음 또는 무효") from None
+    sub = payload.get("sub")
+    uid = int(sub) if sub else None
 
     # 브라우저 EventSource 자동 재접속 시 보내는 Last-Event-ID 헤더를 ?after=보다 우선
     lei = request.headers.get("Last-Event-ID")
     if lei and lei.isdigit():
         after = int(lei)
 
-    # 연결 시 스캔 존재 확인(없으면 404). 동기 DB 조회는 to_thread로 빼 이벤트루프를 막지 않음.
-    def _exists():
+    # 연결 시 소유권 확인(#91): 본인 스캔이 아니거나 없으면 404(존재 은닉).
+    # 동기 DB 조회는 to_thread로 빼 이벤트루프를 막지 않음.
+    def _owned():
         with SessionLocal() as db0:
-            return db0.get(Scan, scan_id) is not None
-    if not await asyncio.to_thread(_exists):
+            return uid is not None and scan_owned_by_uid(db0, scan_id, uid)
+    if not await asyncio.to_thread(_owned):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "스캔 없음")
 
     def _poll(after_id: int):
