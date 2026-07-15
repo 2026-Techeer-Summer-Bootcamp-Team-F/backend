@@ -15,7 +15,8 @@ from ..config import settings
 from ..db import get_db
 from ..deps import get_current_user
 from ..mitigations import get_mitigation
-from ..models import Attempt, AtlasTechnique, Finding, Objective, TargetProject, User
+from ..models import (Attempt, AtlasTechnique, Finding, Objective, ScanReport,
+                      TargetProject, User)
 
 router = APIRouter(prefix="/scans", tags=["results"])
 
@@ -57,6 +58,12 @@ def report(scan_id: int, db: Session = Depends(get_db),
            user: User = Depends(get_current_user)):
     """대시보드 통계: 목표/시도/침투/취약점 + 위험도(심각도 가중). 소유권 검증(#91). — §5"""
     scan = scan_owned_or_404(db, scan_id, user)
+    return _report_core(db, scan)
+
+
+def _report_core(db: Session, scan) -> dict:
+    """report() 계산 코어(소유권 검증 제외) — 엔드포인트·워커 요약 공용."""
+    scan_id = scan.scan_id
     objs, attempts, findings = _collect(db, scan_id)
     breached_objs = sum(1 for o in objs if o.status == "breached")
     sev_counts: dict = {}
@@ -132,6 +139,11 @@ def findings(scan_id: int, db: Session = Depends(get_db),
              user: User = Depends(get_current_user)):
     """취약점 목록 + 증거 + 완화책(finding→attempt→objective→atlas 조인). 소유권 검증(#91). — §5"""
     scan_owned_or_404(db, scan_id, user)
+    return _findings_core(db, scan_id)
+
+
+def _findings_core(db: Session, scan_id: int) -> list:
+    """findings() 계산 코어(소유권 검증 제외) — 엔드포인트·워커 요약 공용."""
     _, attempts, finds = _collect(db, scan_id)
     at_by_id = {a.attempt_id: a for a in attempts}
     out = []
@@ -196,11 +208,40 @@ def _build_summary(scan, rep, finds_detail) -> dict:
 @router.get("/{scan_id}/summary")
 def ai_summary(scan_id: int, db: Session = Depends(get_db),
                user: User = Depends(get_current_user)):
-    """리포트 AI 요약 — 키 없으면 통계 템플릿, 있으면 Haiku. 소유권 검증(#91). — §5·§7"""
+    """리포트 AI 요약 — 키 없으면 통계 템플릿, 있으면 Haiku. 소유권 검증(#91). — §5·§7
+
+    캐싱: scan_reports.ai_summary에 한 번 저장 → 이후엔 Haiku 재호출 없이 즉시 반환
+    (매 조회마다 Haiku를 부르면 2~5초 지연되어 요약이 뒤늦게 뜸). 스캔이 끝난 상태이고
+    실제 Haiku 요약이 나왔을 때만 저장한다(진행 중·템플릿 폴백은 다음에 다시 시도).
+    """
     scan = scan_owned_or_404(db, scan_id, user)
-    rep = report(scan_id, db, user)       # 내부 재사용 — user 전달(소유권 재검증)
-    finds = findings(scan_id, db, user)
-    return {"scan_id": scan_id, **_build_summary(scan, rep, finds)}
+    return {"scan_id": scan_id, **warm_summary(db, scan)}
+
+
+def warm_summary(db: Session, scan) -> dict:
+    """요약 캐시 확보(공용: 엔드포인트·워커). 있으면 반환, 없으면 생성 후
+    스캔 종료 + Haiku 결과일 때만 scan_reports에 저장한다."""
+    row = db.execute(
+        sa_select(ScanReport).where(ScanReport.scan_id == scan.scan_id)
+    ).scalar_one_or_none()
+    if row and row.ai_summary:
+        return {"ai_summary": row.ai_summary, "source": "cached"}
+
+    rep = _report_core(db, scan)
+    finds = _findings_core(db, scan.scan_id)
+    result = _build_summary(scan, rep, finds)
+
+    if scan.status in ("done", "failed", "cancelled") and result.get("source") == "haiku":
+        if not row:
+            row = ScanReport(scan_id=scan.scan_id)
+            db.add(row)
+        row.ai_summary = result["ai_summary"]
+        row.risk_score = rep["risk_score"]
+        row.total_attempts = rep["stats"]["total_attempts"]
+        row.breached_attempts = rep["stats"]["breached_attempts"]
+        row.findings_count = rep["stats"]["findings"]
+        db.commit()
+    return result
 
 
 @router.get("/{scan_id}/code-locations")
