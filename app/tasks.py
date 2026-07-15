@@ -76,12 +76,11 @@ def _run_recon(db, scan_id: int, target_id: int) -> dict:
         target.tools = {"detected": profile["tools"]}
         target.rag_sources = {"detected": profile["rag_sources"]}
         # 코드 위치 스캔 (공개 레포 = 토큰 불필요, 비공개는 빈 결과로 폴백)
-        if not target.code_locations:
-            all_atlas_ids = [
-                "AML.T0054", "AML.T0051.000", "AML.T0051.001",
-                "AML.T0056", "AML.T0057", "AML.T0053",
-            ]
-            target.code_locations = run_code_scan(target.repo_url, all_atlas_ids, "")
+        all_atlas_ids = [
+            "AML.T0054", "AML.T0051.000", "AML.T0051.001",
+            "AML.T0056", "AML.T0057", "AML.T0053",
+        ]
+        target.code_locations = run_code_scan(target.repo_url, all_atlas_ids, "")
         db.commit()
         publish(scan_id, "progress",
                 {"phase": "recon", "source": profile["source"],
