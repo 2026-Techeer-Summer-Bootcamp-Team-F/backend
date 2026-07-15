@@ -60,7 +60,10 @@ def _attempt_events(db, scan_id):
 
 
 def _run(db, scan_id, target, prompts, responses):
-    """objective 1개를 스텁 액터/씨앗으로 진화 1회 실행 → (objective_id, 발사수) 반환."""
+    """objective 1개를 스텁 액터/씨앗으로 진화 1회 실행.
+
+    (objective_id, AtlasTechnique 조회 횟수) 반환 — 조회 횟수는 N+1 회귀 검사용.
+    """
     obj = Objective(scan_id=scan_id, atlas_technique_id=ATLAS_ID, status="pending")
     db.add(obj)
     db.commit()
@@ -154,7 +157,7 @@ def main():
         assert safe["target_response_truncated"] is False
         assert safe["canary_triggered"] is False, "거절인데 canary_triggered=True"
         assert safe["flag_token"] is None, "거절인데 flag_token 있음"
-        print(f"④ safe: 전문 왕복 OK · canary_triggered=False · flag_token=None")
+        print("④ safe: 전문 왕복 OK · canary_triggered=False · flag_token=None")
 
         # ⑤ 4000자 캡: 잘리고 truncated=True (프롬프트는 짧으니 False 유지)
         capped = events[1]
@@ -179,7 +182,7 @@ def main():
 
         # ⑧ error(액터 오류): 신규 필드가 여전히 전부 실리고 카나리는 False
         err_obj_id, _ = _run(db, scan.scan_id, t, ["ping"], ["[ACTOR_ERROR] connection refused"])
-        err = [e for e in _attempt_events(db, scan.scan_id) if e["objective_id"] == err_obj_id][0]
+        err = next(e for e in _attempt_events(db, scan.scan_id) if e["objective_id"] == err_obj_id)
         assert err["verdict"] == "error", f"verdict={err['verdict']}"
         assert not [f for f in NEW_FIELDS if f not in err], "error 이벤트에 신규필드 누락"
         assert "[ACTOR_ERROR]" in err["target_response"], "error 응답 전문 누락"
