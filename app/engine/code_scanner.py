@@ -25,8 +25,6 @@ _PATTERNS: dict[str, list[tuple[re.Pattern, str]]] = {
          "사용자 입력이 .format()으로 프롬프트에 직접 삽입됨"),
     ],
     "AML.T0056": [
-        (re.compile(r"(?i)\b(SYSTEM_PROMPT|system_prompt|SYS_PROMPT)\s*="),
-         "시스템프롬프트 변수 발견 — 응답/로그 노출 경로 검토 필요"),
         (re.compile(r"(?i)(?:print|log|logger)\s*\(.*?(system_prompt|SYSTEM_PROMPT)"),
          "시스템프롬프트가 로그/출력에 노출될 수 있음"),
     ],
@@ -95,11 +93,12 @@ def explain_matches(matches: list[dict], api_key: str = "") -> list[dict]:
 
     try:
         import anthropic
+        from ..config import settings   # 지연 임포트
         client = anthropic.Anthropic(api_key=api_key)
         for m in matches:
             try:
                 msg = client.messages.create(
-                    model="claude-haiku-4-5-20251001",
+                    model=settings.attacker_model,
                     max_tokens=80,
                     messages=[{"role": "user", "content": (
                         f"다음 코드 라인이 MITRE ATLAS {m['atlas_id']} 공격에 왜 취약한지 "
