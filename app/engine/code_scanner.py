@@ -57,10 +57,13 @@ def _build_prompt(files_with_lines: str, atlas_ids: list[str],
         f"{files_with_lines}\n\n"
         f"Return a JSON array. Each finding:\n"
         f'{{"file":"filename","line":N,"snippet":"exact line text","atlas_id":"AML.Txxxx",'
-        f'"reason":"why vulnerable, Korean (60 chars max)",'
-        f'"fix":"how to fix THIS specific code, Korean — reference the ATLAS 권고, '
-        f'may include a short corrected code line (140 chars max)"}}\n'
-        f"reason/fix: plain text only — no markdown, no bold, no bullets.\n"
+        f'"reason":"Korean, 2-3 sentences (up to 160 chars): what exactly is wrong on this '
+        f'line AND how an attacker abuses it — be concrete about the attack path, not generic",'
+        f'"fix":"Korean, up to 300 chars: the concrete fix for THIS code aligned with the '
+        f'ATLAS/OWASP 권고 above. Include a short corrected code snippet inline, then one clause '
+        f'on why it closes the hole"}}\n'
+        f"Write full, specific sentences — do NOT truncate mid-thought. plain text only, "
+        f"no markdown/bold/bullets.\n"
         f"Return [] if nothing found. One finding per atlas_id maximum."
     )
 
@@ -165,7 +168,7 @@ def _ai_scan(files: dict[str, str], atlas_ids: list[str], api_key: str,
         client = anthropic.Anthropic(api_key=api_key)
         msg = client.messages.create(
             model=settings.attacker_model,
-            max_tokens=2048,   # fix 필드 추가로 상향
+            max_tokens=3072,   # reason/fix 서술형 상향 — JSON 잘림 방지
             system=_SYSTEM,
             messages=[{"role": "user",
                        "content": _build_prompt(formatted, atlas_ids, static_findings)}],
