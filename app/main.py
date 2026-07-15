@@ -14,6 +14,12 @@ from .db import Base, engine
 
 # PoC: 부팅 시 테이블 자동 생성(운영은 Alembic 마이그레이션으로 교체)
 Base.metadata.create_all(bind=engine)
+# 스키마 자동 보정(#89): 모델엔 있는데 DB에 없는 컬럼을 부팅 시 ADD(additive-only).
+# create_all 은 없는 '테이블'만 만들고 없는 '컬럼'은 못 채워 배포 후 스키마 드리프트 →
+# 조회 500 사고가 남(2026-07-15 code_locations). 배포/재시작마다 자동으로 메운다.
+from .schema_sync import ensure_schema  # noqa: E402
+
+ensure_schema(engine, Base)
 
 app = FastAPI(title="AI Red-Team API", version="0.1.0")
 
