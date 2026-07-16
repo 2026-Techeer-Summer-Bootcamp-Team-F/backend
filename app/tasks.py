@@ -71,9 +71,9 @@ def _run_recon(db, scan_id: int, target_id: int) -> dict:
         target = db.get(TargetProject, target_id)
         if target is None:
             return {}
-        _log("정찰 시작 — 표적 앱 프로파일링")
+        _log("정찰 시작")
         profile = profile_target(target)
-        _log("표적 구성 파악 중 (모델·도구·방어·RAG 식별)")
+        _log("표적 앱 구성 파악 중")
         # 프로파일 저장(정찰필드)
         target.model = profile["model"] or target.model
         if profile["system_prompt"]:
