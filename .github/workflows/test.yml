@@ -4,57 +4,57 @@ on:
     branches: [develop]
   workflow_dispatch:
 jobs:
-  # ── 1) Lint: 파이썬 문법 컴파일 검사(설치 불필요·항상 통과) ──
+  # 1) Lint: python syntax/compile check (no install, always passes)
   lint:
-    name: Lint (문법 검사)
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Python 문법 컴파일 검사
+      - name: Python compile check
         run: python3 -m py_compile $(find app -name '*.py')
 
-  # ── 2) Build: 백엔드 도커 이미지 빌드 검증 ──
+  # 2) Build: verify backend docker image builds
   build:
-    name: Build (도커 이미지)
+    name: Build Docker Image
     needs: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: 백엔드 이미지 빌드
+      - name: Build backend image
         run: docker compose build backend
 
-  # ── 3) Test: E2E 관통 스모크 (기존 스텝 그대로) ──
+  # 3) Test: end-to-end smoke (unchanged)
   test:
-    name: E2E Test (관통 스모크)
+    name: Run E2E Tests
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
-      - name: 스택 기동 (db·redis·rabbitmq·backend·worker)
+      - name: Start stack (db, redis, rabbitmq, backend, worker)
         run: docker compose up -d --build db redis rabbitmq backend worker
 
-      - name: 백엔드 헬스 대기
+      - name: Wait for backend health
         run: |
           for i in $(seq 1 40); do
-            if curl -sf http://localhost:8000/health; then echo " ✅ backend up"; exit 0; fi
+            if curl -sf http://localhost:8000/health; then echo "backend up"; exit 0; fi
             sleep 3
           done
-          echo "❌ backend 안 뜸"; docker compose logs --tail 50 backend; exit 1
+          echo "backend not up"; docker compose logs --tail 50 backend; exit 1
 
-      - name: DB 스키마 생성 + CI 코퍼스 시드
+      - name: Init DB schema + seed corpus
         run: |
           docker compose exec -T -e PYTHONPATH=/app backend python scripts/recreate_db.py
           docker compose exec -T -e PYTHONPATH=/app backend python scripts/ci_seed.py
 
-      - name: E2E 스모크 (등록→스캔→FLAG유출→리포트/트리 전체 관통)
+      - name: E2E smoke (register - scan - FLAG leak - report/tree)
         run: docker compose exec -T -e PYTHONPATH=/app backend python scripts/smoke_e2e.py
 
-      - name: 실패 시 로그
+      - name: Logs on failure
         if: failure()
         run: docker compose logs --tail 80 backend worker
 
-      - name: 정리
+      - name: Cleanup
         if: always()
         run: docker compose down -v
