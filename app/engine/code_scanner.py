@@ -165,17 +165,24 @@ def _ai_scan(files: dict[str, str], atlas_ids: list[str], api_key: str,
     try:
         import anthropic
         from ..config import settings
+        from ..observability import trace_llm
         client = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(
-            model=settings.attacker_model,
-            max_tokens=3072,   # reason/fix 서술형 상향 — JSON 잘림 방지
-            system=_SYSTEM,
-            messages=[{"role": "user",
-                       "content": _build_prompt(formatted, atlas_ids, static_findings)}],
-        )
-        text = "".join(
-            b.text for b in msg.content if getattr(b, "type", "") == "text"
-        ).strip()
+        with trace_llm("code-scan", settings.attacker_model,
+                       {"atlas_ids": atlas_ids, "code_chars": len(formatted)}) as gen:
+            msg = client.messages.create(
+                model=settings.attacker_model,
+                max_tokens=3072,   # reason/fix 서술형 상향 — JSON 잘림 방지
+                system=_SYSTEM,
+                messages=[{"role": "user",
+                           "content": _build_prompt(formatted, atlas_ids, static_findings)}],
+            )
+            text = "".join(
+                b.text for b in msg.content if getattr(b, "type", "") == "text"
+            ).strip()
+            if gen is not None:
+                gen.update(output=text, usage_details={
+                    "input_tokens": msg.usage.input_tokens,
+                    "output_tokens": msg.usage.output_tokens})
         text = _extract_json(text)   # Haiku가 ```json 펜스·설명 붙여도 배열만 추출
         results = json.loads(text)
         if not isinstance(results, list):

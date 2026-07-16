@@ -26,5 +26,8 @@ bandit>=1.7
 # 관측성: FastAPI /metrics 노출(Prometheus 스크레이프). — ARCHITECTURE.md §3.11
 prometheus-fastapi-instrumentator>=7.0
 
+# 관측성: Langfuse LLM 트레이싱(judge/코드스캐너/요약). 키 없으면 no-op. 마스킹 기본 ON.
+langfuse>=3.0
+
 # (옵션) 임베딩 — 별도 파이프라인(embed.py)은 fastembed 사용. 앱 런타임은 검색만.
 # (옵션) BrowserActor: pip install playwright && playwright install chromium

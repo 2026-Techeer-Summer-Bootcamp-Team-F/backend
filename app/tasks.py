@@ -231,4 +231,10 @@ def run_scan(scan_id: int) -> dict:
             if t0 is not None:
                 metrics.SCAN_DURATION.observe(time.monotonic() - t0)
             metrics.SCAN_FINISHED.labels(status=result_status or "unknown").inc()
+        # Langfuse 대기 트레이스 강제 전송(키 없으면 no-op) — 데모 즉시 반영
+        try:
+            from .observability import flush as _lf_flush
+            _lf_flush()
+        except Exception:  # noqa: BLE001 - 관측성 flush 실패는 스캔에 영향 없음
+            pass
         db.close()

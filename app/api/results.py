@@ -192,13 +192,20 @@ def _build_summary(scan, rep, finds_detail) -> dict:
         return {"ai_summary": template, "source": "template"}
     try:
         import anthropic
+        from ..observability import trace_llm
         client = anthropic.Anthropic(api_key=key)
-        msg = client.messages.create(
-            model=settings.attacker_model, max_tokens=400,
-            messages=[{"role": "user", "content":
-                       "다음 AI 레드팀 스캔 결과를 보안 담당자용으로 3~4문장 한국어로 요약하고 "
-                       f"핵심 위험과 권고를 덧붙여줘:\n{template}"}])
-        text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        with trace_llm("report-summary", settings.attacker_model,
+                       {"scan_id": scan.scan_id, "risk": rep["risk_score"]}) as gen:
+            msg = client.messages.create(
+                model=settings.attacker_model, max_tokens=400,
+                messages=[{"role": "user", "content":
+                           "다음 AI 레드팀 스캔 결과를 보안 담당자용으로 3~4문장 한국어로 요약하고 "
+                           f"핵심 위험과 권고를 덧붙여줘:\n{template}"}])
+            text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+            if gen is not None:
+                gen.update(output=text, usage_details={
+                    "input_tokens": msg.usage.input_tokens,
+                    "output_tokens": msg.usage.output_tokens})
         return {"ai_summary": text or template, "source": "haiku"}
     except Exception:  # noqa: BLE001 - 키 무효/네트워크 등 → 템플릿 폴백(요약은 끊기면 안 됨)
         return {"ai_summary": template, "source": "template-fallback"}
