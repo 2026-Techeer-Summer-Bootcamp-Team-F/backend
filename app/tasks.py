@@ -63,11 +63,17 @@ def _run_recon(db, scan_id: int, target_id: int) -> dict:
     - 실패해도 스캔은 계속(정찰 없이 사용자 지정 목표로 진행).
     """
     profile = {}
+
+    def _log(msg):
+        publish(scan_id, "log", {"message": msg}, db=db)
+
     try:
         target = db.get(TargetProject, target_id)
         if target is None:
             return {}
+        _log("정찰 시작")
         profile = profile_target(target)
+        _log("표적 앱 구성 파악 중")
         # 프로파일 저장(정찰필드)
         target.model = profile["model"] or target.model
         if profile["system_prompt"]:
@@ -90,10 +96,11 @@ def _run_recon(db, scan_id: int, target_id: int) -> dict:
                 token = decrypt_token(owner.access_token_enc) or ""
         except Exception:  # noqa: BLE001 - 토큰 복호화 실패 → 토큰 없이 진행
             token = ""
-        locs = run_code_scan(target.repo_url, all_atlas_ids, token)
+        locs = run_code_scan(target.repo_url, all_atlas_ids, token, on_log=_log)
         if locs:
             target.code_locations = locs
         db.commit()
+        _log("recon 완료 — 진화 루프 시작")
         publish(scan_id, "progress",
                 {"phase": "recon", "source": profile["source"],
                  "tools": profile["tools"], "defenses": profile["defenses"],
