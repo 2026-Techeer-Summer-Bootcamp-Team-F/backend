@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """환경설정 (pydantic-settings). .env 에서 로드. — ARCHITECTURE.md §11.3"""
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,6 +36,17 @@ class Settings(BaseSettings):
     # ── 공격자 LLM (변이/판정 폴백; 비우면 결정론적 변이만) ──
     anthropic_api_key: str = ""
     attacker_model: str = "claude-haiku-4-5-20251001"
+
+    # ── 관측성: Langfuse (LLM 호출 트레이싱; 키 없으면 자동 비활성=no-op) ──
+    # judge Tier3·코드스캐너·리포트요약의 Haiku 호출을 트레이싱(지연·토큰·비용·플로우).
+    # ⚠️ 마스킹 ON이 기본 — 프롬프트/표적응답 '원문'은 Langfuse로 안 보내고 길이·메타만 전송
+    #    (보안도구가 캐낸 유출데이터를 제3자 SaaS에 흘리지 않도록). host는 리전별 주소.
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    # env: LANGFUSE_HOST (구 LANGFUSE_BASE_URL 도 허용). JP 리전 예: https://jp.cloud.langfuse.com
+    langfuse_host: str = Field(
+        default="", validation_alias=AliasChoices("LANGFUSE_HOST", "LANGFUSE_BASE_URL"))
+    langfuse_mask: bool = True   # False로 두면 원문까지 전송(권장 X)
 
     # ── RabbitMQ (Celery 메시지 브로커 — 태스크 배달) — 2026-07-10 브로커 분리 ──
     rabbitmq_url: str = "amqp://guest:guest@localhost:5672//"
