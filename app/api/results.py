@@ -8,6 +8,7 @@ import json
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select as sa_select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..authz import scan_owned_or_404
@@ -247,7 +248,18 @@ def warm_summary(db: Session, scan) -> dict:
         row.total_attempts = rep["stats"]["total_attempts"]
         row.breached_attempts = rep["stats"]["breached_attempts"]
         row.findings_count = rep["stats"]["findings"]
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            # 워커(스캔종료 사전생성)와 엔드포인트(/summary 조회)가 거의 동시에 같은
+            # scan_reports 행을 INSERT하면 UNIQUE(scan_id) 충돌 → 롤백 후 이미 저장된
+            # 행을 읽어 반환(레이스 방어, 500 방지). 상대가 방금 저장한 요약을 그대로 씀.
+            db.rollback()
+            existing = db.execute(
+                sa_select(ScanReport).where(ScanReport.scan_id == scan.scan_id)
+            ).scalar_one_or_none()
+            if existing and existing.ai_summary:
+                return {"ai_summary": existing.ai_summary, "source": "cached"}
     return result
 
 
