@@ -207,23 +207,31 @@ def _ai_scan(files: dict[str, str], atlas_ids: list[str], api_key: str,
         return []
 
 
-def run_code_scan(repo_url: str, atlas_ids: list[str], token: str = "") -> list[dict]:
-    """GitHub 레포 fetch → AI 코드 분석 → 취약 위치 목록 반환."""
+def run_code_scan(repo_url: str, atlas_ids: list[str], token: str = "", on_log=None) -> list[dict]:
+    """GitHub 레포 fetch → AI 코드 분석 → 취약 위치 목록 반환.
+
+    on_log(msg:str)->None: 진행상황 콜백(없으면 no-op). 스캔 화면 실시간 로그용.
+    """
+    say = on_log or (lambda _m: None)
     if not repo_url:
         return []
     try:
         from ..recon import fetch_repo_sources
         from ..config import settings
+        say("표적 레포 소스 가져오는 중...")
         files = fetch_repo_sources(repo_url, token)
         if not files:
             log.info("code_scanner: 레포 소스 없음 — %s", repo_url)
+            say("레포 소스 없음 — 코드 분석 건너뜀")
             return []
+        say("정적 코드 분석 중 (%d개 파일)..." % len(files))
         if not settings.anthropic_api_key:
             log.info("code_scanner: API 키 없음 — AI 분석 건너뜀")
             return []
         static = _bandit_scan(files)   # Phase2: 결정론적 정적 탐지로 AI 근거 보강
         if static:
             log.info("code_scanner: Bandit %d건 → AI 근거로 주입", len(static))
+        say("AI 코드 분석 중 — MITRE ATLAS 기법별 취약점 매핑...")
         return _ai_scan(files, atlas_ids, settings.anthropic_api_key, static)
     except Exception as e:   # noqa: BLE001
         log.warning("code_scanner: 스캔 실패(%s): %s", repo_url, e)
