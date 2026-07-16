@@ -4,7 +4,29 @@ on:
     branches: [develop]
   workflow_dispatch:
 jobs:
+  # ── 1) Lint: 파이썬 문법 컴파일 검사(설치 불필요·항상 통과) ──
+  lint:
+    name: Lint (문법 검사)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python 문법 컴파일 검사
+        run: python3 -m py_compile $(find app -name '*.py')
+
+  # ── 2) Build: 백엔드 도커 이미지 빌드 검증 ──
+  build:
+    name: Build (도커 이미지)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 백엔드 이미지 빌드
+        run: docker compose build backend
+
+  # ── 3) Test: E2E 관통 스모크 (기존 스텝 그대로) ──
   test:
+    name: E2E Test (관통 스모크)
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
