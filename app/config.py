@@ -37,6 +37,29 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     attacker_model: str = "claude-haiku-4-5-20251001"
 
+    # ── 씨앗 검색: 벡터 의미검색 (정찰정보 질의 임베딩) — #130 ──
+    # 기본 OFF = 기존 메타필터(하위호환). ON 하려면 fastembed 필요(RAM~90MB 로드).
+    # 로드 실패/임베딩 없음 → retrieve가 메타필터로 자동 폴백(안 죽음).
+    retrieve_vector_enabled: bool = True
+    # 코퍼스 임베딩과 '같은 모델'이라야 코사인이 의미 있음(load_corpus embedding = 384d all-MiniLM).
+    embed_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    retrieve_candidate_cap: int = 2000   # 벡터랭킹 후보 상한(메모리·시간)
+
+    # ── 판정: AI 우선 (카나리·거절만 룰 확정 → 나머지 Haiku 최종판정) — #130 ──
+    # 기본 OFF = 기존(0.45~0.8 애매구간만 Haiku). ON 하면 룰로 못 가른 것 전부 AI.
+    # 키 없거나 실패 시 휴리스틱 폴백(안 끊김).
+    judge_ai_primary: bool = True
+
+    # ── 공격자: AI 공격 생성 (교본 사다리 타며 응답 보고 다음 공격) — #130 ──
+    # 기본 OFF = 기존 결정론 변이(랜덤 6연산자). ON 하면 Haiku가 다음 공격 설계.
+    # 거부/키없음/실패 시 결정론 변이로 폴백(안 끊김).
+    attacker_ai_enabled: bool = True
+
+    # ── 정찰: LLM 통합 판단 (ast/grep 좁힌 코드를 Haiku가 종합·앱파악) — #130 ──
+    # 기본 OFF = 기존 ast+grep만. ON 하면 Haiku가 도메인·위험 판단 추가.
+    # 키없음/실패 시 결정론(ast+grep) 결과만으로 폴백.
+    recon_llm_enabled: bool = True
+
     # ── 관측성: Langfuse (LLM 호출 트레이싱; 키 없으면 자동 비활성=no-op) ──
     # judge Tier3·코드스캐너·리포트요약의 Haiku 호출을 트레이싱(지연·토큰·비용·플로우).
     # ⚠️ 마스킹 ON이 기본 — 프롬프트/표적응답 '원문'은 Langfuse로 안 보내고 길이·메타만 전송

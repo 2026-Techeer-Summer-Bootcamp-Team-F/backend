@@ -29,5 +29,8 @@ prometheus-fastapi-instrumentator>=7.0
 # 관측성: Langfuse LLM 트레이싱(judge/코드스캐너/요약). 키 없으면 no-op. 마스킹 기본 ON.
 langfuse>=3.0
 
+fastembed>=0.3   # 질의 임베딩(런타임 벡터검색 retrieve, RETRIEVE_VECTOR_ENABLED)
+numpy>=1.24      # 벡터 코사인 랭킹(retrieve)
+
 # (옵션) 임베딩 — 별도 파이프라인(embed.py)은 fastembed 사용. 앱 런타임은 검색만.
 # (옵션) BrowserActor: pip install playwright && playwright install chromium
