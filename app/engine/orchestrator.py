@@ -14,9 +14,11 @@ import time
 from dataclasses import dataclass
 
 from .. import metrics
+from ..config import settings
 from ..mitigations import get_mitigation
 from ..models import AtlasTechnique, Attempt, Finding
 from .actor import make_actor
+from .attacker import next_attack
 from .judge import judge
 from .mutators import mutate, pick_op
 from .retrieve import retrieve_seeds
@@ -69,7 +71,16 @@ def run_evolution(db, scan_id: int, objective, target, canary,
     atlas_name = technique.name if technique else ""
     attempt_index = 0
 
-    def _publish_started(prompt, generation, op):
+    # 표적 프로필(judge/retrieve/attacker 공용) — 정찰정보. None 방어적 처리. — #130
+    profile = {
+        "model": target.model or "",
+        "system_prompt": target.system_prompt or "",
+        "tools": (target.tools or {}).get("detected", []),
+        "defenses": (target.defences or {}).get("detected", []),
+        "rag_sources": (target.rag_sources or {}).get("detected", []),
+    }
+
+    def _publish_started(prompt, generation, op, improvement=None):
         """발사 직전: 공격 프롬프트만 실어 발행 → 채팅이 공격 말풍선+타이핑을 그린다. — #102
 
         순번(attempt_index)을 여기서 확정한다(발사 시점). 뒤따르는 attempt가 같은
@@ -81,12 +92,12 @@ def run_evolution(db, scan_id: int, objective, target, canary,
         attack_prompt, prompt_truncated = _cap(prompt)
         publish(scan_id, "attempt_started", {
             "attempt_index": attempt_index, "generation": generation,
-            "mutation_op": op or "seed",
+            "mutation_op": op or "seed", "improvement": improvement or "",
             "attack_prompt": attack_prompt, "attack_prompt_truncated": prompt_truncated,
             "atlas": atlas_id, "atlas_name": atlas_name},
             db=db, objective_id=objective.objective_id)
 
-    def _record_attempt(prompt, resp, v, generation, parent_id, op):
+    def _record_attempt(prompt, resp, v, generation, parent_id, op, improvement=None):
         at = Attempt(
             objective_id=objective.objective_id, parent_id=parent_id,
             prompt_text=prompt, response_text=resp, fitness=v["score"],
@@ -104,7 +115,7 @@ def run_evolution(db, scan_id: int, objective, target, canary,
         payload = {
             "attempt_id": at.attempt_id, "generation": generation,
             "parent_id": parent_id, "verdict": v["verdict"], "score": v["score"],
-            "mutation_op": op or "seed", "atlas": atlas_id,
+            "mutation_op": op or "seed", "improvement": improvement or "", "atlas": atlas_id,
             "prompt": prompt[:200],
             # 실시간 공격 채팅(#97): 공격/응답 전문 + 판정 근거. 모든 attempt에 항상 실어
             # 프론트에 undefined 분기가 없게 한다. verdict는 breach|safe|error 그대로 두고
@@ -140,21 +151,28 @@ def run_evolution(db, scan_id: int, objective, target, canary,
             db=db, objective_id=objective.objective_id)
 
     # ── 0세대: 씨앗 그대로 발사 (LLM 안 씀 = 쌈) ──
-    seeds = retrieve_seeds(db, atlas_id=atlas_id, k=cfg.population_size)
+    # 정찰정보로 의미검색 질의 구성(RETRIEVE_VECTOR_ENABLED off면 retrieve가 무시 → 기존과 동일).
+    query_text = " ".join(
+        x for x in [atlas_name, profile["system_prompt"][:300], " ".join(profile["tools"])] if x
+    )[:1000]
+    seeds = retrieve_seeds(db, atlas_id=atlas_id, k=cfg.population_size, query_text=query_text)
     population: list = []
     best = 0.0
+    history: list = []   # 이 objective의 시도 히스토리(공격자 AI few-shot용) — #130
     for seed in seeds:
         _publish_started(seed.prompt_text, 0, None)      # 발사 직전 = 채팅 공격 말풍선(#102)
         resp = _fire(actor, seed.prompt_text)
-        v = judge(resp, canary)
+        v = judge(resp, canary, system_prompt=profile["system_prompt"], objective=atlas_name)
         at = _record_attempt(seed.prompt_text, resp, v, 0, None, None)
+        history.append({"prompt": seed.prompt_text, "response": resp,
+                        "verdict": v["verdict"], "score": v["score"]})
         best = max(best, v["score"])
         if v["verdict"] == "breach":
             _record_finding(at, v)
             return True
         population.append(Node(at.attempt_id, seed.prompt_text, v["score"]))
 
-    # ── 진화 세대: select(UCB) → mutate → fire → judge → elitism ──
+    # ── 진화 세대: select(UCB) → mutate/attacker → fire → judge → elitism ──
     stagnation = 0
     step = 0
     for gen in range(1, cfg.max_generations + 1):
@@ -168,12 +186,28 @@ def run_evolution(db, scan_id: int, objective, target, canary,
 
         step += 1
         parent = select(population, step)
-        op = pick_op()
-        child, _improvement = mutate(parent.prompt, op, [n.prompt for n in population])
-        _publish_started(child, gen, op)                  # 발사 직전 = 채팅 공격 말풍선(#102)
+        if settings.attacker_ai_enabled:
+            # 세대마다 코퍼스 재검색(재검색): 현재 best 공격 + 직전 응답 기준으로 관련 씨앗을 다시
+            # 뽑아 공격자 예시로 준다(벡터 off면 retrieve가 메타필터로 폴백). 실패 시 0세대 seeds 재사용.
+            gen_query = " ".join(
+                x for x in [atlas_name, parent.prompt[:300],
+                            (history[-1]["response"] if history else "")[:300]] if x)[:1000]
+            gen_seeds = retrieve_seeds(db, atlas_id=atlas_id, k=cfg.population_size,
+                                       query_text=gen_query) or seeds
+            # AI 공격자: 목표+프로필+히스토리+(재검색)씨앗 보고 다음 한 수 설계.
+            #   → 새 공격 생성(변형) 또는 재검색된 검증 씨앗 활용. 거부/실패 시 내부 결정론 폴백. — #130
+            atk = next_attack(atlas_id, atlas_name, profile, history, gen_seeds, parent.prompt,
+                              [n.prompt for n in population])
+            child, op, improvement = atk["prompt"], atk["technique"], atk["improvement"]
+        else:
+            op = pick_op()
+            child, improvement = mutate(parent.prompt, op, [n.prompt for n in population])
+        _publish_started(child, gen, op, improvement)      # 발사 직전 = 채팅 공격 말풍선(#102)
         resp = _fire(actor, child)
-        v = judge(resp, canary)
-        at = _record_attempt(child, resp, v, gen, parent.attempt_id, op)
+        v = judge(resp, canary, system_prompt=profile["system_prompt"], objective=atlas_name)
+        at = _record_attempt(child, resp, v, gen, parent.attempt_id, op, improvement)
+        history.append({"prompt": child, "response": resp,
+                        "verdict": v["verdict"], "score": v["score"]})
 
         # UCB 역전파(부모가 좋은 자식을 냈으면 보상↑)
         parent.visits += 1
