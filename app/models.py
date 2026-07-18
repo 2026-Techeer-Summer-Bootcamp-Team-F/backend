@@ -60,6 +60,7 @@ class Scan(Base):
     status: Mapped[str] = mapped_column(String, default="pending")  # pending/running/done/failed
     config: Mapped[dict] = mapped_column(JSON, default=dict)        # attack_types 등 요청 원본
     progress: Mapped[dict] = mapped_column(JSON, default=dict)      # generation/best_score/phase
+    commit_sha: Mapped[str | None] = mapped_column(String, nullable=True)  # 스캔 시점 표적 HEAD SHA(버전관리)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)

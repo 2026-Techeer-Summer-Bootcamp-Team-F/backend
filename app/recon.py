@@ -427,6 +427,38 @@ def _parse_repo(repo_url):
     return (m.group(1), m.group(2)) if m else (None, None)
 
 
+def resolve_head_sha(repo_url, token=None):
+    """GitHub 레포의 default branch HEAD 커밋 SHA를 반환(없으면 None).
+
+    스캔 시점의 "실제 스캔 대상 코드 상태"를 기록하기 위한 것(버전 관리 #132).
+    공개 레포는 token 없이도 가능(rate-limit). 비공개/오류/파싱실패 → None(폴백).
+    지연 임포트(httpx)로 순수 로직 테스트엔 네트워크 의존 없음.
+    """
+    import httpx
+
+    owner, repo = _parse_repo(repo_url)
+    if not owner or not repo:
+        return None
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        with httpx.Client(timeout=8, headers=headers) as client:
+            info = client.get(f"https://api.github.com/repos/{owner}/{repo}")
+            if info.status_code != 200:
+                return None
+            branch = info.json().get("default_branch", "main")
+            # commits/{branch}는 브랜치 HEAD 커밋 1건을 반환 → sha만 취함.
+            head = client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/commits/{branch}")
+            if head.status_code != 200:
+                return None
+            return head.json().get("sha") or None
+    except Exception as e:  # noqa: BLE001 - 네트워크/파싱 실패 → 폴백
+        log.warning("recon: HEAD SHA 조회 실패(%s): %s", repo_url, e)
+        return None
+
+
 def fetch_repo_sources(repo_url, token=None, max_files=8, max_bytes=120_000):
     """GitHub 레포에서 서버 후보 소스 파일들을 fetch → dict{경로:코드}.
 
