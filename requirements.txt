@@ -32,5 +32,7 @@ langfuse>=3.0
 fastembed>=0.3   # 질의 임베딩(런타임 벡터검색 retrieve, RETRIEVE_VECTOR_ENABLED)
 numpy>=1.24      # 벡터 코사인 랭킹(retrieve)
 
+boto3>=1.34      # AWS SES 이메일 리포트 발송(EMAIL_PROVIDER=ses)
+
 # (옵션) 임베딩 — 별도 파이프라인(embed.py)은 fastembed 사용. 앱 런타임은 검색만.
 # (옵션) BrowserActor: pip install playwright && playwright install chromium

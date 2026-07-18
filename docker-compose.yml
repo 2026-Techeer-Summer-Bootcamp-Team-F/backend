@@ -56,6 +56,10 @@ services:
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      # SES 이메일 발송용 AWS 자격증명(마운트한 ~/.aws 가리킴). EMAIL_* 는 .env에서 로드.
+      AWS_SHARED_CREDENTIALS_FILE: /aws/credentials
+      AWS_CONFIG_FILE: /aws/config
+      AWS_DEFAULT_REGION: ${SES_REGION:-ap-northeast-2}
     depends_on:
       db:
         condition: service_healthy
@@ -68,6 +72,7 @@ services:
     # 개발용: 호스트 코드 마운트 + --reload → 편집 즉시 반영(리빌드 불필요)
     volumes:
       - ./:/app
+      - ${HOME}/.aws:/aws:ro        # SES 발송용 AWS 자격증명(읽기전용)
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
   # Celery 워커 — 진화엔진(스캔)을 별도 프로세스에서 실행. RabbitMQ 큐에서 일감을 꺼내 돎.

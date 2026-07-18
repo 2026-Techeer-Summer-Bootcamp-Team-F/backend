@@ -28,6 +28,7 @@ class User(Base):
     github_id: Mapped[str] = mapped_column(String, unique=True, index=True)  # 불변 식별자
     github_name: Mapped[str] = mapped_column(String, default="")             # GitHub username(표시)
     name: Mapped[str] = mapped_column(String, default="")                    # 표시 이름
+    email: Mapped[str] = mapped_column(String, default="")                   # 리포트 메일 수신주소(GitHub user:email)
     access_token_enc: Mapped[str] = mapped_column(String, default="")        # GitHub 토큰(리포조회용)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 

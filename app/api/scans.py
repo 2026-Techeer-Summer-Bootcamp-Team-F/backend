@@ -28,7 +28,7 @@ from ..models import (
     User,
 )
 from ..recon import attack_types_to_atlas
-from ..schemas import ScanCreate
+from ..schemas import EmailReportIn, ScanCreate
 from ..security import decode_access_token
 from ..tasks import run_scan
 
@@ -237,6 +237,27 @@ def cancel_scan(scan_id: int, db: Session = Depends(get_db),
     from ..engine.scan_manager import publish
     publish(scan_id, "done", {"status": "cancelled", "stop_reason": "cancelled"}, db=db)
     return {"scan_id": scan_id, "status": "cancelled", "stop_reason": "cancelled"}
+
+
+@router.post("/{scan_id}/email")
+def email_report(scan_id: int, body: EmailReportIn, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """리포트를 이메일로 수동 발송(재발송). 소유권 검증. — §6
+
+    수신주소: body.email 지정 시 그 주소, 없으면 자동(user.email). 종료된 스캔만.
+    """
+    scan = scan_owned_or_404(db, scan_id, user)
+    if scan.status not in ("done", "failed", "cancelled"):
+        raise HTTPException(status.HTTP_409_CONFLICT, "스캔이 아직 끝나지 않았습니다")
+    from ..api.results import warm_summary
+    from ..mailer import notify_scan_report
+    summary = warm_summary(db, scan)
+    sent = notify_scan_report(db, scan, summary.get("ai_summary", ""),
+                              force=True, to=body.email or "")
+    if not sent:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "발송 실패 — 수신주소가 없거나(GitHub 이메일 미설정) 메일 provider 오류")
+    return {"scan_id": scan_id, "sent": True}
 
 
 @router.get("/{scan_id}/stream")
