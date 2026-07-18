@@ -21,7 +21,7 @@ from .db import SessionLocal
 from .engine.orchestrator import run_evolution
 from .engine.scan_manager import publish
 from .models import AtlasTechnique, Objective, Scan, TargetProject
-from .recon import profile_target, profile_to_atlas
+from .recon import profile_target, profile_to_atlas, resolve_head_sha
 from .engine.code_scanner import run_code_scan
 
 log = logging.getLogger("redteam.tasks")
@@ -96,6 +96,15 @@ def _run_recon(db, scan_id: int, target_id: int) -> dict:
                 token = decrypt_token(owner.access_token_enc) or ""
         except Exception:  # noqa: BLE001 - 토큰 복호화 실패 → 토큰 없이 진행
             token = ""
+        # 스캔 시점 표적 HEAD SHA 기록(버전 관리 #132). 조회 실패해도 스캔은 계속(null 폴백).
+        # 별도 commit으로 확정 — 이후 정찰(run_code_scan 등)에서 예외로 rollback돼도 SHA는 보존
+        # (CodeRabbit #134). ※ contents API 기반 fetch라 SHA로 완전 pin되진 않음(짧은 창은 PoC 수용).
+        sha = resolve_head_sha(target.repo_url, token)
+        if sha:
+            scan_row = db.get(Scan, scan_id)
+            if scan_row is not None:
+                scan_row.commit_sha = sha
+                db.commit()
         locs = run_code_scan(target.repo_url, all_atlas_ids, token, on_log=_log)
         if locs:
             target.code_locations = locs

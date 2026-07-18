@@ -8,11 +8,12 @@ import os
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select as sa_select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import get_current_user
-from ..models import TargetProject, User, _now
+from ..models import Objective, Scan, TargetProject, User, _now
 from ..engine.code_scanner import run_code_scan
 from ..recon import detect_http_contract, fetch_repo_sources, profile_target
 from ..schemas import ActorSaveIn, DetectIn, ProjectCreateIn, ProjectUpdateIn
@@ -191,6 +192,48 @@ def get_project(target_id: int, db: Session = Depends(get_db),
                 user: User = Depends(get_current_user)):
     """프로젝트 단건 조회 — 본인 소유만(§3). 없음=404 / 타인=403."""
     return _project_detail(_owned_or_error(db, target_id, user))
+
+
+@router.get("/projects/{target_id}/scan-history")
+def scan_history(target_id: int, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """스캔 버전 관리용 이력(#132) — 프로젝트의 스캔을 최신순으로 요약. 소유권 검증(§3).
+
+    각 스캔: id·날짜·commit_sha·상태 + objective 집계(총/방어/돌파). objective는 한 번에
+    조회해 Python에서 스캔별 집계(N+1 회피). 최대 50건.
+    """
+    target = _owned_or_error(db, target_id, user)
+    scans = db.scalars(
+        sa_select(Scan).where(Scan.target_id == target_id)
+        .order_by(Scan.scan_id.desc()).limit(50)).all()
+    scan_ids = [s.scan_id for s in scans]
+    # objective(status)를 한 번에 조회 → 스캔별 (총, 방어, 돌파) 집계.
+    # 방어는 종료 상태만 명시 집계(미확정 pending/running을 방어로 오집계하지 않음, CodeRabbit #134).
+    agg: dict = {}
+    if scan_ids:
+        rows = db.execute(
+            sa_select(Objective.scan_id, Objective.status)
+            .where(Objective.scan_id.in_(scan_ids))).all()
+        for sid, st in rows:
+            total, defended, breached = agg.get(sid, (0, 0, 0))
+            if st == "breached":
+                breached += 1
+            elif st not in ("pending", "running"):     # safe/exhausted/failed = 방어 확정
+                defended += 1
+            agg[sid] = (total + 1, defended, breached)
+    out = []
+    for s in scans:
+        total, defended, breached = agg.get(s.scan_id, (0, 0, 0))
+        out.append({
+            "scan_id": s.scan_id,
+            "date": s.created_at.date().isoformat() if s.created_at else None,
+            "commit_sha": s.commit_sha,
+            "status": s.status,
+            "total_objectives": total,
+            "defended": defended,
+            "breach_count": breached,
+        })
+    return {"target_id": target_id, "project_name": target.project_name, "scans": out}
 
 
 @router.patch("/projects/{target_id}")
