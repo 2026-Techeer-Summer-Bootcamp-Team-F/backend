@@ -291,7 +291,7 @@ def evolution(scan_id: int, atlas_id: str, db: Session = Depends(get_db),
             "score": round(a.fitness or 0.0, 3),
             "verdict": "breached" if a.breached else "safe",
             "mutation_op": a.mutation_op or "seed",
-            "improvement": getattr(a, "improvement", "") or "",
+            "improvement": a.improvement or "",
         })
     return {"atlas_id": atlas_id, "nodes": nodes}
 

@@ -95,7 +95,7 @@ def test_evolution_node_fields(client, db):
     child = next(n for n in nodes if n["generation"] == 1)
     assert child["parent_id"] == seed["attempt_id"]
     assert child["mutation_op"] == "roleplay"
-    # improvement 필드: Task 2(Attempt.improvement 컬럼 추가) 완료 전까지 ""
+    # improvement는 _seed() 픽스처에서 설정하지 않으므로 빈 문자열
     assert child["improvement"] == ""
 
 def test_evolution_unknown_atlas(client, db):
