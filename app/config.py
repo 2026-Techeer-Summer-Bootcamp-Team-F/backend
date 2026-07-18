@@ -27,8 +27,19 @@ class Settings(BaseSettings):
     github_client_id: str = ""
     github_client_secret: str = ""
     github_redirect_uri: str = "http://localhost:5173/auth/callback"
-    github_scope: str = "read:user repo"    # repos(비공개 포함) 조회 위해 repo 스코프
+    # repos(비공개 포함) 조회 위해 repo, 스캔완료 리포트 메일 발송 위해 user:email 스코프.
+    github_scope: str = "read:user repo user:email"
     frontend_url: str = "http://localhost:5173"
+
+    # ── 이메일 리포트 발송 (스캔완료 시 AI요약+링크) ──
+    # provider: ses(AWS SES, boto3) | resend | console(로컬: 실제발송 X, 내용만 로그).
+    # 수신자=표적 소유자 user.email(GitHub user:email) → 없으면 dev_test_email(로컬 mock).
+    email_provider: str = "console"         # ses | resend | console
+    email_from: str = "AI RedTeam 리포트 <onboarding@resend.dev>"  # SES 샌드박스면 verified 주소여야
+    email_reply_to: str = ""                # 답장 받을 주소(옵션)
+    dev_test_email: str = ""                # mock/dev-login 유저에 채울 테스트 수신주소
+    ses_region: str = "ap-northeast-2"      # SES 리전(서울)
+    resend_api_key: str = ""                # EMAIL_PROVIDER=resend 일 때
 
     # ── GitHub 토큰 저장 암호화(옵션) ──
     token_enc_key: str = ""                 # 있으면 Fernet 암호화, 없으면 평문(PoC)

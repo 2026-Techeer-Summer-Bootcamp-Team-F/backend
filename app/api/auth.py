@@ -32,7 +32,21 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN = "https://github.com/login/oauth/access_token"
 GITHUB_USER = "https://api.github.com/user"
+GITHUB_EMAILS = "https://api.github.com/user/emails"
 GITHUB_GRANT = "https://api.github.com/applications/{client_id}/grant"
+
+
+def _pick_email(gh: dict, emails: list) -> str:
+    """리포트 발송 수신주소 선택 — /user/emails 중 primary+verified 우선.
+    실패 시 verified 아무거나 → 그것도 없으면 /user 공개 email → 빈 문자열."""
+    if isinstance(emails, list):
+        for e in emails:  # primary이면서 verified 최우선
+            if isinstance(e, dict) and e.get("primary") and e.get("verified"):
+                return e.get("email") or ""
+        for e in emails:  # 그다음 verified 아무거나
+            if isinstance(e, dict) and e.get("verified"):
+                return e.get("email") or ""
+    return gh.get("email") or ""    # /user 공개 email(대개 None) 폴백
 
 
 def _user_public(u: User) -> dict:
@@ -47,8 +61,8 @@ def _issue(u: User) -> dict:
 
 
 def _upsert(db: Session, github_id: str, github_name: str,
-            name: str, token_enc: str = "") -> User:
-    """github_id 기준 사용자 upsert(없으면 생성). 토큰이 있으면 함께 갱신."""
+            name: str, token_enc: str = "", email: str = "") -> User:
+    """github_id 기준 사용자 upsert(없으면 생성). 토큰·이메일이 있으면 함께 갱신."""
     user = db.query(User).filter(User.github_id == github_id).first()
     if user is None:
         user = User(github_id=github_id)
@@ -57,6 +71,8 @@ def _upsert(db: Session, github_id: str, github_name: str,
     user.name = name
     if token_enc:
         user.access_token_enc = token_enc
+    if email:                       # 빈 값이면 기존 이메일 보존(덮어쓰기 금지)
+        user.email = email
     db.commit()
     db.refresh(user)
     return user
@@ -67,10 +83,14 @@ def github_login():
     """OAuth 시작 → authorize_url 반환(SPA가 이동). state=CSRF 서명토큰."""
     if not settings.github_client_id:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "GITHUB_CLIENT_ID 미설정")
+    # 리포트 메일 발송 위해 user:email 보장(.env가 옛 스코프여도 항상 포함).
+    scope = settings.github_scope
+    if "user:email" not in scope:
+        scope = f"{scope} user:email".strip()
     params = {
         "client_id": settings.github_client_id,
         "redirect_uri": settings.github_redirect_uri,
-        "scope": settings.github_scope,
+        "scope": scope,
         "state": create_oauth_state(),
     }
     return {"authorize_url": f"{GITHUB_AUTHORIZE}?{urlencode(params)}"}
@@ -121,13 +141,27 @@ def github_callback(code: str, state: str = "", db: Session = Depends(get_db)):
         except ValueError:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, "GitHub 사용자 응답 파싱 실패") from None
 
+        # 리포트 메일 수신주소 — user:email 스코프로 /user/emails 조회(실패해도 로그인은 진행).
+        emails = []
+        try:
+            e_resp = client.get(
+                GITHUB_EMAILS,
+                headers={"Authorization": f"Bearer {access_token}",
+                         "Accept": "application/vnd.github+json"},
+            )
+            if e_resp.status_code == 200:
+                emails = e_resp.json()
+        except (httpx.RequestError, ValueError):
+            logger.info("GitHub 이메일 조회 실패(무시) — user:email 스코프 미동의 가능")
+
     gh_id = gh.get("id")
     if gh_id is None:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "GitHub 사용자 응답에 id 없음")
     user = _upsert(db, github_id=str(gh_id),
                    github_name=gh.get("login") or "",
                    name=gh.get("name") or "",
-                   token_enc=encrypt_token(access_token))
+                   token_enc=encrypt_token(access_token),
+                   email=_pick_email(gh, emails))
     return _issue(user)
 
 
@@ -136,9 +170,11 @@ def dev_login(body: DevLoginIn, db: Session = Depends(get_db)):
     """AUTH_MODE=mock 전용 — GitHub 없이 토큰 발급(Swagger 테스트용)."""
     if settings.auth_mode != "mock":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "dev-login은 AUTH_MODE=mock 에서만 허용")
+    # 로컬 개발: GitHub 이메일이 없으니 요청값 → 없으면 settings.dev_test_email 로 리포트 메일 테스트.
     user = _upsert(db, github_id=f"dev:{body.github_name}",
                    github_name=body.github_name,
-                   name=body.name or body.github_name)
+                   name=body.name or body.github_name,
+                   email=body.email or settings.dev_test_email)
     return _issue(user)
 
 

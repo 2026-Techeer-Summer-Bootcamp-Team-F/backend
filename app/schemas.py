@@ -20,6 +20,12 @@ class DevLoginIn(BaseModel):
     """POST /auth/dev-login — PoC 전용(AUTH_MODE=mock). GitHub 없이 토큰 발급."""
     github_name: str
     name: str = ""
+    email: str = ""          # 리포트 메일 테스트용(비우면 settings.dev_test_email 사용)
+
+
+class EmailReportIn(BaseModel):
+    """POST /scans/{id}/email — 리포트 메일 수동 발송. email 비우면 자동(user.email)."""
+    email: str = ""
 
 
 class ActorSaveIn(BaseModel):
