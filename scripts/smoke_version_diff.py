@@ -30,11 +30,12 @@ _PROJ = "smoke-vc-proj"
 # prev → cur 로 설계한 기법별 판정(status: breached | safe)과 기대 verdict.
 #   T0056: breached→safe = solved / T0057: breached→breached = open
 #   T0051.000: safe→breached = regressed / T0054: safe→safe = keep
-_TECHS = ["AML.T0056", "AML.T0057", "AML.T0051.000", "AML.T0054"]
+_TECHS = ["AML.T0056", "AML.T0057", "AML.T0051.000", "AML.T0054", "AML.T0053"]
 _PREV = {"AML.T0056": "breached", "AML.T0057": "breached",
          "AML.T0051.000": "safe", "AML.T0054": "safe"}
+# T0053: 현재 스캔에서 미확정(pending) — 방어로 세면 안 되고 version-diff에서도 제외돼야 함.
 _CUR = {"AML.T0056": "safe", "AML.T0057": "breached",
-        "AML.T0051.000": "breached", "AML.T0054": "safe"}
+        "AML.T0051.000": "breached", "AML.T0054": "safe", "AML.T0053": "pending"}
 _EXPECT = {"AML.T0056": "solved", "AML.T0057": "open",
            "AML.T0051.000": "regressed", "AML.T0054": "keep"}
 
@@ -149,8 +150,10 @@ def main():
               scans and scans[0]["scan_id"] == cur_id and scans[1]["scan_id"] == prev_id)
         cur_row = scans[0]
         check("scan-history commit_sha 노출", cur_row["commit_sha"] == "ccccccc5678")
-        check("scan-history 집계(총4·방어2·돌파2)",
-              cur_row["total_objectives"] == 4 and cur_row["defended"] == 2
+        # cur: 총5(T0053 pending 포함) · 방어2(T0056,T0054) · 돌파2(T0057,T0051.000).
+        # pending은 방어로 세지 않음 → defended==2 (총-돌파=3 아님).
+        check("scan-history 집계(총5·방어2·돌파2, pending 방어 제외)",
+              cur_row["total_objectives"] == 5 and cur_row["defended"] == 2
               and cur_row["breach_count"] == 2)
 
         # --- version-diff (cur, base 자동=prev) ---
@@ -163,6 +166,8 @@ def main():
               and vd.get("head_sha") == "ccccccc5678")
         verdicts = {x["atlas_technique_id"]: x["verdict"] for x in vd.get("results", [])}
         check("verdict solved/open/keep/regressed 전부 일치", verdicts == _EXPECT)
+        check("미확정(pending) 기법은 version-diff에서 제외",
+              "AML.T0053" not in verdicts and len(vd["results"]) == 4)
         # before/after status 확인(한 건)
         solved = next(x for x in vd["results"] if x["atlas_technique_id"] == "AML.T0056")
         check("solved before=breached/after=defended",

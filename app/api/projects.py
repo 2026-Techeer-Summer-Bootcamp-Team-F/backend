@@ -207,25 +207,30 @@ def scan_history(target_id: int, db: Session = Depends(get_db),
         sa_select(Scan).where(Scan.target_id == target_id)
         .order_by(Scan.scan_id.desc()).limit(50)).all()
     scan_ids = [s.scan_id for s in scans]
-    # objective(status)를 한 번에 조회 → 스캔별 (총, 돌파) 집계.
+    # objective(status)를 한 번에 조회 → 스캔별 (총, 방어, 돌파) 집계.
+    # 방어는 종료 상태만 명시 집계(미확정 pending/running을 방어로 오집계하지 않음, CodeRabbit #134).
     agg: dict = {}
     if scan_ids:
         rows = db.execute(
             sa_select(Objective.scan_id, Objective.status)
             .where(Objective.scan_id.in_(scan_ids))).all()
         for sid, st in rows:
-            total, breached = agg.get(sid, (0, 0))
-            agg[sid] = (total + 1, breached + (1 if st == "breached" else 0))
+            total, defended, breached = agg.get(sid, (0, 0, 0))
+            if st == "breached":
+                breached += 1
+            elif st not in ("pending", "running"):     # safe/exhausted/failed = 방어 확정
+                defended += 1
+            agg[sid] = (total + 1, defended, breached)
     out = []
     for s in scans:
-        total, breached = agg.get(s.scan_id, (0, 0))
+        total, defended, breached = agg.get(s.scan_id, (0, 0, 0))
         out.append({
             "scan_id": s.scan_id,
             "date": s.created_at.date().isoformat() if s.created_at else None,
             "commit_sha": s.commit_sha,
             "status": s.status,
             "total_objectives": total,
-            "defended": total - breached,
+            "defended": defended,
             "breach_count": breached,
         })
     return {"target_id": target_id, "project_name": target.project_name, "scans": out}
