@@ -102,6 +102,7 @@ def run_evolution(db, scan_id: int, objective, target, canary,
             objective_id=objective.objective_id, parent_id=parent_id,
             prompt_text=prompt, response_text=resp, fitness=v["score"],
             generation=generation, mutation_op=op or "",
+            improvement=improvement or "",
             breached=(v["verdict"] == "breach"))
         db.add(at)
         db.commit()
