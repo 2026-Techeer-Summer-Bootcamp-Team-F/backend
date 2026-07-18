@@ -459,6 +459,92 @@ def resolve_head_sha(repo_url, token=None):
         return None
 
 
+# compare diff 파싱 상한(버전관리 #132): 한 파일당 컬럼별 최대 라인 수(거대 diff 방어).
+_DIFF_MAX_LINES = 500
+
+# GitHub compare status → 목업 kind(mod|new|del). rename/copy/changed는 수정으로 취급.
+_DIFF_KIND = {"added": "new", "removed": "del"}
+
+
+def _parse_patch(patch, max_lines=_DIFF_MAX_LINES):
+    """GitHub unified diff patch → (before, after) 두 컬럼 배열.
+
+    각 원소는 목업 형태 {n:줄번호, t:''|'add'|'del', c:원문}. before=이전 버전 뷰
+    (context+삭제줄), after=현재 버전 뷰(context+추가줄). 줄번호는 hunk 헤더 기준.
+    patch가 없으면(거대 파일 등 GitHub이 patch 생략) (None, None).
+    """
+    if not patch:
+        return None, None
+    before, after = [], []
+    oldn = newn = 0
+    for line in patch.split("\n"):
+        if line.startswith("@@"):
+            # @@ -a,b +c,d @@ → 이후 줄의 시작 줄번호(a, c)를 잡는다.
+            m = re.search(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+            if m:
+                oldn, newn = int(m.group(1)), int(m.group(2))
+            continue
+        if line.startswith("\\"):        # "\ No newline at end of file"
+            continue
+        tag, text = line[:1], line[1:]
+        if tag == "-":
+            before.append({"n": oldn, "t": "del", "c": text})
+            oldn += 1
+        elif tag == "+":
+            after.append({"n": newn, "t": "add", "c": text})
+            newn += 1
+        else:                             # context(공백 접두) — 양쪽 공통
+            before.append({"n": oldn, "t": "", "c": text})
+            after.append({"n": newn, "t": "", "c": text})
+            oldn += 1
+            newn += 1
+    # 거대 diff 방어: 컬럼별 상한 초과 시 잘라내고 안내 줄을 덧붙임.
+    def _cap(col):
+        if len(col) > max_lines:
+            head = col[:max_lines]
+            head.append({"n": 0, "t": "", "c": f"… ({len(col) - max_lines}줄 더 — 생략)"})
+            return head
+        return col
+    return (_cap(before) if before else None), (_cap(after) if after else None)
+
+
+def fetch_commit_diff(repo_url, base_sha, head_sha, token=None, max_files=60):
+    """두 커밋(base…head) 사이 변경 파일 목록 + 파일별 diff(버전관리 #132).
+
+    GitHub compare API로 파일별 unified patch를 받아 목업 형태로 파싱:
+    [{path, kind: mod|new|del, before:[{n,t,c}]|null, after:[{n,t,c}]|null}].
+    base/head가 같거나 없으면 빈 리스트. 네트워크/권한/파싱 실패 → [](우아한 폴백).
+    """
+    import httpx
+
+    owner, repo = _parse_repo(repo_url)
+    if not owner or not repo or not base_sha or not head_sha or base_sha == head_sha:
+        return []
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        with httpx.Client(timeout=12, headers=headers) as client:
+            r = client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/compare/{base_sha}...{head_sha}")
+            if r.status_code != 200:
+                log.warning("recon: compare 실패(%s): %s", repo_url, r.status_code)
+                return []
+            out = []
+            for f in r.json().get("files", [])[:max_files]:
+                before, after = _parse_patch(f.get("patch"))
+                out.append({
+                    "path": f.get("filename", ""),
+                    "kind": _DIFF_KIND.get(f.get("status"), "mod"),
+                    "before": before,
+                    "after": after,
+                })
+            return out
+    except Exception as e:  # noqa: BLE001 - 네트워크/파싱 실패 → 폴백
+        log.warning("recon: compare diff 실패(%s): %s", repo_url, e)
+        return []
+
+
 def fetch_repo_sources(repo_url, token=None, max_files=8, max_bytes=120_000):
     """GitHub 레포에서 서버 후보 소스 파일들을 fetch → dict{경로:코드}.
 

@@ -54,6 +54,71 @@ def _collect(db: Session, scan_id: int):
     return objs, attempts, findings
 
 
+def _technique_status(db: Session, scan_id: int) -> dict:
+    """스캔의 ATLAS 기법별 판정 요약 → {atlas_id: {name, status, score}} — 버전비교용(#132).
+
+    status: 'breached'(objective 하나라도 뚫림) | 'defended'. score: 그 기법 시도 최고 fitness.
+    같은 기법이 여러 objective로 잡혀도 max로 합쳐 기법 1건으로 요약한다.
+    """
+    objs, attempts, _ = _collect(db, scan_id)
+    best: dict = {}                                   # objective_id -> 최고 fitness
+    for a in attempts:
+        best[a.objective_id] = max(best.get(a.objective_id, 0.0), a.fitness or 0.0)
+    out: dict = {}
+    for o in objs:
+        score = round(best.get(o.objective_id, 0.0), 3)
+        breached = o.status == "breached"
+        cur = out.get(o.atlas_technique_id)
+        if cur is None:
+            tech = db.get(AtlasTechnique, o.atlas_technique_id)
+            out[o.atlas_technique_id] = {
+                "name": tech.name if tech else o.atlas_technique_id,
+                "status": "breached" if breached else "defended",
+                "score": score,
+            }
+        else:
+            if breached:
+                cur["status"] = "breached"
+            cur["score"] = max(cur["score"], score)
+    return out
+
+
+def _verdict(before_status: str, after_status: str) -> str:
+    """이전→현재 판정 변화 → verdict(#132). before 없음(신규 기법)은 호출부에서 'keep' 처리."""
+    if before_status == "breached":
+        return "solved" if after_status == "defended" else "open"
+    # before == defended
+    return "regressed" if after_status == "breached" else "keep"
+
+
+def compare_techniques(db: Session, base_scan_id: int | None, cur_scan_id: int) -> list:
+    """두 스캔의 기법별 판정 변화 목록(#132). base 없으면(=baseline) 빈 리스트.
+
+    현재 스캔이 테스트한 기법을 기준으로, 같은 atlas_id의 이전 판정과 비교한다.
+    이전 스캔에 없던 기법은 before=null, verdict='keep'(비교 대상 없음).
+    """
+    if base_scan_id is None:
+        return []
+    prev = _technique_status(db, base_scan_id)
+    cur = _technique_status(db, cur_scan_id)
+    out = []
+    for atlas_id, c in cur.items():
+        p = prev.get(atlas_id)
+        before = {"status": p["status"], "score": p["score"]} if p else None
+        verdict = _verdict(p["status"], c["status"]) if p else "keep"
+        out.append({
+            "atlas_technique_id": atlas_id,
+            "name": c["name"],
+            "before": before,
+            "after": {"status": c["status"], "score": c["score"]},
+            "verdict": verdict,
+        })
+    # 판정 우선순위: 해결/후퇴/미해결을 위로(사용자가 변화부터 보게), 유지는 아래로.
+    order = {"solved": 0, "regressed": 1, "open": 2, "keep": 3}
+    out.sort(key=lambda r: order.get(r["verdict"], 9))
+    return out
+
+
 @router.get("/{scan_id}/report")
 def report(scan_id: int, db: Session = Depends(get_db),
            user: User = Depends(get_current_user)):
