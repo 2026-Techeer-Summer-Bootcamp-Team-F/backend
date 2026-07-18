@@ -6,7 +6,7 @@ AI 요약은 키 없으면 템플릿, ANTHROPIC_API_KEY 있으면 Haiku로 자�
 """
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select as sa_select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -16,8 +16,10 @@ from ..config import settings
 from ..db import get_db
 from ..deps import get_current_user
 from ..mitigations import get_mitigation
-from ..models import (Attempt, AtlasTechnique, Finding, Objective, ScanReport,
-                      TargetProject, User)
+from ..models import (Attempt, AtlasTechnique, Finding, Objective, Scan,
+                      ScanReport, TargetProject, User)
+from ..recon import fetch_commit_diff
+from ..security import decrypt_token
 
 router = APIRouter(prefix="/scans", tags=["results"])
 
@@ -375,3 +377,63 @@ def code_locations(scan_id: int, db: Session = Depends(get_db),
 
     locs = target.code_locations if isinstance(target.code_locations, list) else []
     return [loc for loc in locs if loc.get("atlas_id") in tested_atlas_ids]
+
+
+@router.get("/{scan_id}/version-diff")
+def version_diff(scan_id: int, base: int | None = None,
+                 db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """스캔 버전 비교(#132) — 이전↔현재 코드 diff + 기법별 판정 변화. 소유권 검증(#91).
+
+    base 생략 시 같은 표적의 직전 스캔을 자동 선택. 이전 스캔이 없으면 baseline(빈 상태).
+    코드 diff는 두 스캔의 commit_sha로 GitHub compare API를 호출해 얻고, 실패해도
+    기법별 판정 변화(results)는 항상 반환한다(diff_error로 사유 안내).
+    """
+    cur = scan_owned_or_404(db, scan_id, user)
+    # base 결정: 명시되면 검증(본인·같은 표적), 아니면 직전 스캔 자동.
+    if base is not None:
+        base_scan = scan_owned_or_404(db, base, user)
+        if base_scan.target_id != cur.target_id:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                "다른 표적의 스캔과는 비교할 수 없습니다")
+    else:
+        base_scan = db.scalars(
+            sa_select(Scan)
+            .where(Scan.target_id == cur.target_id, Scan.scan_id < scan_id)
+            .order_by(Scan.scan_id.desc()).limit(1)).first()
+
+    base_scan_id = base_scan.scan_id if base_scan else None
+    baseline = base_scan is None
+    head_sha = cur.commit_sha
+    base_sha = base_scan.commit_sha if base_scan else None
+
+    results = compare_techniques(db, base_scan_id, scan_id)
+
+    files: list = []
+    diff_error = None
+    if baseline:
+        diff_error = "최초 스캔이라 비교할 이전 버전이 없습니다."
+    elif not base_sha or not head_sha:
+        diff_error = "커밋 정보가 없어 코드 변경점을 가져올 수 없습니다."
+    else:
+        target = db.get(TargetProject, cur.target_id)
+        token = ""
+        try:
+            owner = db.get(User, target.user_id) if target else None
+            if owner and owner.access_token_enc:
+                token = decrypt_token(owner.access_token_enc) or ""
+        except Exception:  # noqa: BLE001 - 토큰 복호화 실패 → 토큰 없이(공개 레포) 시도
+            token = ""
+        files = fetch_commit_diff(
+            target.repo_url if target else "", base_sha, head_sha, token)
+        if not files:
+            diff_error = "변경된 파일이 없거나 diff를 가져오지 못했습니다."
+
+    resp = {
+        "scan_id": scan_id, "base_scan_id": base_scan_id,
+        "head_sha": head_sha, "base_sha": base_sha,
+        "baseline": baseline, "results": results, "files": files,
+    }
+    if diff_error:
+        resp["diff_error"] = diff_error
+    return resp
