@@ -157,27 +157,29 @@ def run_evolution(db, scan_id: int, objective, target, canary,
         x for x in [atlas_name, profile["system_prompt"][:300], " ".join(profile["tools"])] if x
     )[:1000]
     seeds = retrieve_seeds(db, atlas_id=atlas_id, k=cfg.population_size, query_text=query_text)
-    # 씨앗 선택 완료 — 트리 UI에 선택된 프롬프트 미리보기 전달
+    # commit 전에 prompt_text를 문자열로 미리 추출 — publish의 db.commit()이 ORM 객체를 expire시켜
+    # 이후 루프에서 lazy reload가 필요해지는 문제 방지.
+    seed_texts = [(s.prompt_text or "") for s in seeds]
     publish(scan_id, "seeds_retrieved", {
         "atlas": atlas_id, "atlas_name": atlas_name,
-        "count": len(seeds),
-        "previews": [(s.prompt_text or "")[:80] for s in seeds],
+        "count": len(seed_texts),
+        "previews": [t[:80] for t in seed_texts],
     }, db=db, objective_id=objective.objective_id)
     population: list = []
     best = 0.0
     history: list = []   # 이 objective의 시도 히스토리(공격자 AI few-shot용) — #130
-    for seed in seeds:
-        _publish_started(seed.prompt_text, 0, None)      # 발사 직전 = 채팅 공격 말풍선(#102)
-        resp = _fire(actor, seed.prompt_text)
+    for seed_text in seed_texts:
+        _publish_started(seed_text, 0, None)      # 발사 직전 = 채팅 공격 말풍선(#102)
+        resp = _fire(actor, seed_text)
         v = judge(resp, canary, system_prompt=profile["system_prompt"], objective=atlas_name)
-        at = _record_attempt(seed.prompt_text, resp, v, 0, None, None)
-        history.append({"prompt": seed.prompt_text, "response": resp,
+        at = _record_attempt(seed_text, resp, v, 0, None, None)
+        history.append({"prompt": seed_text, "response": resp,
                         "verdict": v["verdict"], "score": v["score"]})
         best = max(best, v["score"])
         if v["verdict"] == "breach":
             _record_finding(at, v)
             return True
-        population.append(Node(at.attempt_id, seed.prompt_text, v["score"]))
+        population.append(Node(at.attempt_id, seed_text, v["score"]))
 
     # ── 진화 세대: select(UCB) → mutate/attacker → fire → judge → elitism ──
     stagnation = 0
