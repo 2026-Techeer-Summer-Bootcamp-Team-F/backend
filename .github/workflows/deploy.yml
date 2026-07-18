@@ -21,4 +21,9 @@ jobs:
       - name: Redeploy on EC2
         run: |
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} \
-            "cd ~/backend && docker compose -f docker-compose.prod.yml up -d --build backend worker caddy"
+            "cd ~/backend && \
+             docker compose -f docker-compose.prod.yml stop backend worker || true && \
+             docker compose -f docker-compose.prod.yml build backend worker && \
+             docker compose -f docker-compose.prod.yml up -d backend worker caddy"
+    # ⚠️ t3.micro(1GB) OOM 방지: 옛 backend·worker(각 fastembed ~200MB) 를 stop 해
+    #    RAM 확보 후 빌드 → up. (기존 up --build 는 컨테이너 가동 중 빌드로 OOM=Exit137, 트러블 #35)
