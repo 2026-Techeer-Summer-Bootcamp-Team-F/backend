@@ -157,6 +157,12 @@ def run_evolution(db, scan_id: int, objective, target, canary,
         x for x in [atlas_name, profile["system_prompt"][:300], " ".join(profile["tools"])] if x
     )[:1000]
     seeds = retrieve_seeds(db, atlas_id=atlas_id, k=cfg.population_size, query_text=query_text)
+    # 씨앗 선택 완료 — 트리 UI에 선택된 프롬프트 미리보기 전달
+    publish(scan_id, "seeds_retrieved", {
+        "atlas": atlas_id, "atlas_name": atlas_name,
+        "count": len(seeds),
+        "previews": [(s.prompt_text or "")[:80] for s in seeds],
+    }, db=db, objective_id=objective.objective_id)
     population: list = []
     best = 0.0
     history: list = []   # 이 objective의 시도 히스토리(공격자 AI few-shot용) — #130
