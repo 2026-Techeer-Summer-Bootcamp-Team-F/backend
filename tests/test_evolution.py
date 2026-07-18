@@ -33,7 +33,11 @@ def setup_db():
 
 @pytest.fixture
 def db():
-    return TestingSessionLocal()
+    session = TestingSessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
 
 @pytest.fixture
 def client():
@@ -91,6 +95,8 @@ def test_evolution_node_fields(client, db):
     child = next(n for n in nodes if n["generation"] == 1)
     assert child["parent_id"] == seed["attempt_id"]
     assert child["mutation_op"] == "roleplay"
+    # improvement 필드: Task 2(Attempt.improvement 컬럼 추가) 완료 전까지 ""
+    assert child["improvement"] == ""
 
 def test_evolution_unknown_atlas(client, db):
     scan_id, _, user = _seed(db)
