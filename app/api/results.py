@@ -263,6 +263,39 @@ def warm_summary(db: Session, scan) -> dict:
     return result
 
 
+@router.get("/{scan_id}/evolution")
+def evolution(scan_id: int, atlas_id: str, db: Session = Depends(get_db),
+              user: User = Depends(get_current_user)):
+    """기법별 진화 트리 데이터 — attempt 계보(parent_id 체인). 소유권 검증."""
+    scan_owned_or_404(db, scan_id, user)
+    objs = db.scalars(
+        sa_select(Objective).where(
+            Objective.scan_id == scan_id,
+            Objective.atlas_technique_id == atlas_id,
+        )
+    ).all()
+    if not objs:
+        return {"atlas_id": atlas_id, "nodes": []}
+    obj_ids = [o.objective_id for o in objs]
+    attempts = db.scalars(
+        sa_select(Attempt).where(Attempt.objective_id.in_(obj_ids))
+        .order_by(Attempt.generation, Attempt.attempt_id)
+    ).all()
+    nodes = []
+    for a in attempts:
+        nodes.append({
+            "attempt_id": a.attempt_id,
+            "parent_id": a.parent_id,
+            "generation": a.generation,
+            "prompt_preview": (a.prompt_text or "")[:120],
+            "score": round(a.fitness or 0.0, 3),
+            "verdict": "breached" if a.breached else "safe",
+            "mutation_op": a.mutation_op or "seed",
+            "improvement": a.improvement or "",
+        })
+    return {"atlas_id": atlas_id, "nodes": nodes}
+
+
 @router.get("/{scan_id}/code-locations")
 def code_locations(scan_id: int, db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):

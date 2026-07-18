@@ -86,6 +86,7 @@ class Attempt(Base):
     fitness: Mapped[float] = mapped_column(default=0.0)
     generation: Mapped[int] = mapped_column(Integer, default=0)
     mutation_op: Mapped[str] = mapped_column(String, default="")
+    improvement: Mapped[str] = mapped_column(String, default="")   # AI 공격 전략 메모
     breached: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
