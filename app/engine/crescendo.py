@@ -76,12 +76,14 @@ def run_crescendo(actor, atlas_id, atlas_name, profile, canary, max_turns,
         note = plan.get("note") or ""
 
         # 무상태 표적이면 이전 대화를 실어 기억을 만든다(세션형이면 message 그대로).
+        # send_text는 표적 발사(fire)에만 쓴다. 표시·기록엔 현재 턴 message만 써야
+        # Attempt.prompt_text/채팅 말풍선/Finding evidence에 누적 트랜스크립트가 안 섞인다(#140 리뷰).
         send_text = message if stateful else _render_stateless(conversation, message)
 
-        on_started(send_text, op, note)
+        on_started(message, op, note)
         resp = fire(actor, send_text)
         v = judge_fn(resp)
-        at = record_attempt(send_text, resp, v, parent_id, op, note)
+        at = record_attempt(message, resp, v, parent_id, op, note)
         parent_id = at.attempt_id
         turns_done = turn_i
 
