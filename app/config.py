@@ -107,5 +107,11 @@ class Settings(BaseSettings):
     # ── Redis (3역할: 캐시(벡터검색 결과)·rate-limit·Celery result backend) ──
     redis_url: str = "redis://localhost:6379/0"
 
+    # ── 스캔 전체 시간 제한: 우아한 마감(graceful deadline) — #139 ──
+    # 스캔 시작 시각 기준 이 초를 넘기면 '진행 중이던 공격 1건'만 마친 뒤 새 공격/목표를
+    # 시작하지 않고 정상 종료(부분 결과). Celery hard-kill이 아니라 앱 레벨 마감.
+    # Celery soft/hard time_limit은 이 값에서 파생(+180/+240) → celery_app.py 참조.
+    scan_deadline_seconds: int = 600
+
 
 settings = Settings()

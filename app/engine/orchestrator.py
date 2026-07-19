@@ -59,10 +59,13 @@ def _fire(actor, prompt: str) -> str:
 
 
 def run_evolution(db, scan_id: int, objective, target, canary,
-                  cfg: EvolveConfig = EvolveConfig()) -> bool:
+                  cfg: EvolveConfig = EvolveConfig(), deadline: float | None = None) -> bool:
     """objective 1개에 대한 진화 루프. 뚫으면 True(+Finding 기록), 아니면 False.
 
     - canary: 성공 판정용 FLAG 문자열(target/scan config에서 옴). judge에 전달.
+    - deadline: 스캔 전체 우아한 마감 시각(time.monotonic 기준, #139). None이면 무제한(하위호환).
+      매 공격(씨앗/세대) '시작 전'에만 검사 → 진행 중 공격은 절대 끊지 않고, 초과 시 새 공격을
+      시작하지 않고 반환한다. 이때 objective.status는 손대지 않아 pending→untested(부분)로 집계된다.
     - 모든 시도는 Attempt로 기록되고 scan_events(폴링 SSE)로 중계된다.
     """
     actor = make_actor(target)
@@ -170,6 +173,10 @@ def run_evolution(db, scan_id: int, objective, target, canary,
     best = 0.0
     history: list = []   # 이 objective의 시도 히스토리(공격자 AI few-shot용) — #130
     for seed_text in seed_texts:
+        # 우아한 마감(#139): 새 공격 시작 전 경과시간 검사. 초과면 새 씨앗을 발사하지 않고
+        # 반환(진행 중 공격 없음 — 이 지점이 발사 직전이므로). status 미변경 → untested.
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
         _publish_started(seed_text, 0, None)      # 발사 직전 = 채팅 공격 말풍선(#102)
         resp = _fire(actor, seed_text)
         v = judge(resp, canary, system_prompt=profile["system_prompt"], objective=atlas_name)
@@ -217,6 +224,10 @@ def run_evolution(db, scan_id: int, objective, target, canary,
     stagnation = 0
     step = 0
     for gen in range(1, cfg.max_generations + 1):
+        # 우아한 마감(#139): 세대(=공격 1건) 시작 전 검사. 초과면 새 세대를 열지 않고 반환
+        # (직전 세대까지 결과는 이미 저장됨). status 미변경 → 부분(untested) 집계.
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
         publish(scan_id, "progress", {
             "phase": "evolve", "generation": gen, "best_score": round(best, 3),
             "population": len(population)}, db=db, objective_id=objective.objective_id)

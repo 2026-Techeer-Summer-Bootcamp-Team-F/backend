@@ -26,12 +26,14 @@ celery_app.conf.update(
     # 유실 방어(계획 §8-A): 워커가 태스크 완료해야 ack → 중간에 죽으면 재큐잉
     task_acks_late=True,
     task_reject_on_worker_lost=True,
-    # 스캔 1건 시간제한(계획 §8): 표적 무응답 등으로 스캔이 멈춰도 워커가 영구 점유되지
-    # 않게 상한. soft(300s) → SoftTimeLimitExceeded 발생 → run_scan의 except가 failed로
-    # 정리하고 ack(재전달 안 됨). hard(360s)는 soft가 안 먹힌 경우의 강제 백스톱.
-    # (concurrency=1일 때 멈춘 스캔이 뒤 스캔을 최대 5분만 막고 자동 해소되게)
-    task_soft_time_limit=300,
-    task_time_limit=360,
+    # 스캔 1건 시간제한(계획 §8 · #139): 주 경로는 앱 레벨 우아한 마감(SCAN_DEADLINE_SECONDS,
+    # 기본 600s) — 초과 시 진행 중 공격 1건만 마치고 정상 종료(부분 결과). 아래 Celery 값은
+    # 그 위의 백스톱이며 deadline에서 파생한다: soft(+180=780s) 도달 시 run_scan이
+    # SoftTimeLimitExceeded를 잡아 동일한 우아 마감으로 흐른다(failed 아님·ack·재전달 없음).
+    # hard(+240=840s)는 soft마저 못 먹힌 경우의 최종 강제 kill.
+    # 순서: 600(app deadline) < 정상 마감 ~710 < 780(soft) < 840(hard).
+    task_soft_time_limit=settings.scan_deadline_seconds + 180,
+    task_time_limit=settings.scan_deadline_seconds + 240,
     # 직렬화는 json(안전)
     task_serializer="json",
     result_serializer="json",
