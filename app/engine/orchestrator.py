@@ -18,7 +18,8 @@ from ..config import settings
 from ..mitigations import get_mitigation
 from ..models import AtlasTechnique, Attempt, Finding
 from .actor import make_actor
-from .attacker import next_attack
+from .attacker import next_attack, next_turn
+from .crescendo import run_crescendo
 from .judge import judge
 from .mutators import mutate, pick_op
 from .retrieve import retrieve_seeds
@@ -180,6 +181,37 @@ def run_evolution(db, scan_id: int, objective, target, canary,
             _record_finding(at, v)
             return True
         population.append(Node(at.attempt_id, seed_text, v["score"]))
+
+    # ── 멀티턴(Crescendo): 씨앗이 안 뚫었을 때 대화로 점진 유도 — #138 (기본 OFF) ──
+    # objective당 1회, 0세대 실패 시에만. 각 턴=Attempt(parent=직전 턴)라 트리/대화 UI 그대로.
+    if settings.multiturn_enabled:
+        publish(scan_id, "progress", {
+            "phase": "crescendo", "generation": 0, "best_score": round(best, 3),
+            "population": len(population)}, db=db, objective_id=objective.objective_id)
+
+        def _cres_judge(resp):
+            return judge(resp, canary, system_prompt=profile["system_prompt"], objective=atlas_name)
+
+        def _cres_plan(conversation, turn_i):
+            return next_turn(atlas_id, atlas_name, profile, conversation,
+                             turn_i, settings.multiturn_max_turns)
+
+        def _cres_started(prompt, op, note):
+            _publish_started(prompt, 0, op, note)
+
+        def _cres_record(prompt, resp, v, parent_id, op, note):
+            at2 = _record_attempt(prompt, resp, v, 0, parent_id, op, note)
+            history.append({"prompt": prompt, "response": resp,
+                            "verdict": v["verdict"], "score": v["score"]})
+            return at2
+
+        result = run_crescendo(actor, atlas_id, atlas_name, profile, canary,
+                               settings.multiturn_max_turns,
+                               _cres_judge, _cres_plan, _cres_started, _cres_record, _fire)
+        if result["breached"]:
+            _record_finding(result["attempt"], result["verdict"])
+            return True
+        best = max([best] + [h["score"] for h in history])
 
     # ── 진화 세대: select(UCB) → mutate/attacker → fire → judge → elitism ──
     stagnation = 0
