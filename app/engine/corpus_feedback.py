@@ -1,17 +1,16 @@
 # -*- coding: utf-8 -*-
 """자기강화: 뚫은 공격을 attack_cases에 되먹임(자가진화 DB). — 로드맵 "데이터베이스 강화"
 
-"묵혀두기 → 승격" 파이프라인:
+파이프라인(기본 = 즉시편입):
   스캔 성공(Attempt.breached=True)
     → ①수확 → ②표적특정(카나리·URL·앱이름)·길이 필터 → ③스캔 내 dedup → 기법당 fitness 상위 K
-    → staging 적재: source="self_learned", verified=False, embedding=NULL, tags.hits=1  (벡터변환 안 함)
-    → 같은 프롬프트가 다시 뚫리면 hits += 1
-    → hits ≥ promote_hits(재현됨) → 그때 384d 임베딩 + verified=True 승격 → retrieve 편입
+    → ④기존 코퍼스 exact dedup → ⑤적재: source="self_learned", verified=True + 384d 벡터변환
+    → 다음 스캔 retrieve가 verified 가중치(+벡터 코사인)로 우선 재사용 = 성공 복리·결과 일관성.
 
-왜 즉시 안 넣고 묵히나: judge 오탐·1회성 플루크가 곧장 verified 씨앗이 되면 오염이 복리로 번진다.
-"여러 번 재현된 것"만 승격 → 검증 신뢰도↑, 임베딩(벡터변환)은 될 놈에만 지출.
-
-retrieve는 verified=True를 우선(성공 가중치)하므로 미승격(verified=False)은 검색 특권이 없다.
+뚫린 건 뚫린 것 — 즉시 편입한다. 오탐/편중은 표적특정 필터 + 기법당 fitness top_k로 거른다.
+(promote_hits≥2로 올리면 "재현돼야 편입"하는 묵혀두기 모드: 처음엔 verified=False·embedding=NULL로
+ 쌓고 같은 프롬프트가 hits회 재뚫림 시 승격. 단 진화가 같은 프롬프트를 잘 재발사 안 해 실제론
+ 거의 안 쌓임 → 기본은 즉시편입. tags.hits로 재현 횟수는 계속 집계된다.)
 
 안전장치: config 플래그 on/off / source 분리로 한 줄 롤백
 (DELETE FROM attack_cases WHERE source='self_learned') / 표적특정 필터+dedup+유형당 상한 /
