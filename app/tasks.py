@@ -17,6 +17,7 @@ from sqlalchemy import select as sa_select
 
 from . import metrics
 from .celery_app import celery_app
+from .config import settings
 from .db import SessionLocal
 from .engine.orchestrator import run_evolution
 from .engine.scan_manager import publish
@@ -169,6 +170,7 @@ def run_scan(scan_id: int) -> dict:
         metrics.SCANS_IN_PROGRESS.inc()          # 진행중 게이지 +1
         started = True
         t0 = time.monotonic()
+        deadline = t0 + settings.scan_deadline_seconds   # 우아한 마감 시각(#139)
         publish(scan_id, "log", {"message": "스캔 시작"}, db=db)
 
         # ── 정찰(recon): 표적 코드 프로파일링 → 프로파일 저장 + objectives 반영(#37) ──
@@ -184,6 +186,7 @@ def run_scan(scan_id: int) -> dict:
                   or (scan.config or {}).get("canary")) if target else None
 
         breached = 0
+        partial = False        # 시간 제한으로 조기 종료(부분 결과)됐는지 (#139)
         for obj in objectives:
             # 취소 감지(#56): 사용자가 POST /cancel로 status=cancelled 하면 목표 사이에서 중단
             db.refresh(scan)
@@ -191,14 +194,26 @@ def run_scan(scan_id: int) -> dict:
                 log.info("[worker] 스캔 취소 감지 — 중단: scan_id=%s", scan_id)
                 result_status = "cancelled"
                 return {"scan_id": scan_id, "status": "cancelled"}
+            # 우아한 마감(#139): 새 목표 시작 전 경과시간 검사. 초과면 새 목표를 시작하지 않고
+            # 루프 탈출 → 아래 done-마감으로 부분 결과 정상 종료. 남은 목표는 pending→untested.
+            # (한 objective 내부 공격 1건은 run_evolution이 deadline으로 자체 마감)
+            if time.monotonic() >= deadline:
+                log.info("[worker] 스캔 시간 제한 도달 — 남은 목표 미실행 종료: scan_id=%s", scan_id)
+                partial = True
+                break
             # 진화 루프(#39): retrieve→select→mutate→fire→judge→elitism. 뚫으면 Finding+breached.
             try:
-                if run_evolution(db, scan_id, obj, target, canary):
+                if run_evolution(db, scan_id, obj, target, canary, deadline=deadline):
                     breached += 1
             except SoftTimeLimitExceeded:
-                # 스캔 전체 시간초과 → 이 목표에서 삼키지 말고 바깥으로 던져 스캔을 failed 종료
-                # (안 그러면 다음 목표로 넘어가 hard time_limit에 강제 종료 → acks_late 재전달 루프)
-                raise
+                # Celery soft 백스톱(780s) 도달 — 앱 deadline(600s)이 못 막은 예외 상황.
+                # 강제 실패로 끊지 않고 동일한 우아한 마감 경로로: 지금까지 commit된 attempt를
+                # 남기고 done(부분)으로 정상 종료(→ ack, 재전달 없음). 진행 중 1건만 유실될 수 있음.
+                # soft가 commit 도중 터졌을 수 있어 세션을 롤백해 재사용 가능하게 정리.
+                log.warning("[worker] soft time limit 도달 — 우아 마감(부분 결과): scan_id=%s", scan_id)
+                db.rollback()
+                partial = True
+                break
             except Exception:
                 log.exception("[worker] objective 진화 실패(계속): objective_id=%s", obj.objective_id)
                 obj.status = "failed"
@@ -213,9 +228,15 @@ def run_scan(scan_id: int) -> dict:
             return {"scan_id": scan_id, "status": "cancelled"}
         scan.status = "done"
         scan.finished_at = _now()
+        if partial:
+            # 시간 제한으로 조기 종료(부분 결과) 사유 기록 — progress에 남겨 리포트/디버깅에 노출.
+            scan.progress = {**(scan.progress or {}), "stopped_reason": "deadline", "partial": True}
         db.commit()
-        publish(scan_id, "done",
-                {"status": "done", "objectives": len(objectives), "breached": breached}, db=db)
+        done_payload = {"status": "done", "objectives": len(objectives), "breached": breached}
+        if partial:
+            done_payload["stopped_reason"] = "deadline"   # 조기 종료 사유(SSE done)
+            done_payload["partial"] = True
+        publish(scan_id, "done", done_payload, db=db)
         summary = {}
         try:  # AI 요약 사전 생성+캐싱 — 리포트 첫 조회 시 Haiku 지연(2~5초) 제거
             from .api.results import warm_summary
