@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     # 거부/키없음/실패 시 결정론 변이로 폴백(안 끊김).
     attacker_ai_enabled: bool = True
 
+    # ── 멀티턴(Crescendo): 한 에피소드=여러 턴 대화로 점진 유도 — #138 ──
+    # 기본 OFF = 기존 단발 진화만(오늘과 100% 동일). ON 하면 0세대 씨앗이 안 뚫었을 때
+    # actor 세션을 유지한 채 Haiku가 턴마다 '직전 응답 인용→한 단계 escalate'로 대화를 끈다.
+    # 정렬모델(Claude 등) 대상 지렛대. 각 턴=Attempt(parent=직전 턴)라 트리/대화 UI 그대로.
+    multiturn_enabled: bool = False
+    multiturn_max_turns: int = 3   # 한 에피소드 최대 턴(토큰·밴 방어 상한; 정체/에러 시 더 일찍 끊김)
+
     # ── 정찰: LLM 통합 판단 (ast/grep 좁힌 코드를 Haiku가 종합·앱파악) — #130 ──
     # 기본 OFF = 기존 ast+grep만. ON 하면 Haiku가 도메인·위험 판단 추가.
     # 키없음/실패 시 결정론(ast+grep) 결과만으로 폴백.
