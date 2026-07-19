@@ -64,6 +64,18 @@ def start_scan(body: ScanCreate, db: Session = Depends(get_db),
             or target.user_id != user.user_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "표적 프로젝트 없음")
 
+    # 스캔 버튼 여러 번 눌러도 큐가 쌓이지 않게(워커 concurrency=1): 같은 표적의 기존
+    # 대기/진행 스캔을 취소하고 최신 요청만 남긴다(latest-wins). 워커는 취소를 감지해
+    # in-flight 스캔도 다음 체크포인트에서 중단 → 새 스캔이 바로 앞차례가 된다.
+    superseded = (db.query(Scan)
+                  .filter(Scan.target_id == target.target_id,
+                          Scan.status.in_(["pending", "running"]))
+                  .all())
+    for old in superseded:
+        old.status = "cancelled"
+    if superseded:
+        db.commit()
+
     scan = Scan(target_id=target.target_id, status="pending", config=body.config)
     db.add(scan)
     db.commit()
