@@ -71,6 +71,17 @@ class Settings(BaseSettings):
     # 키없음/실패 시 결정론(ast+grep) 결과만으로 폴백.
     recon_llm_enabled: bool = True
 
+    # ── 자기강화: 뚫은 공격을 attack_cases에 되먹임(자가진화 DB) — 로드맵 "데이터베이스 강화" ──
+    # ON = 스캔 done 시 breach된 시도를 필터·dedup해 source="self_learned"로 되먹임.
+    # "묵혀두기→승격": 처음엔 verified=False·embedding=NULL(staging)로만 쌓고, 같은 프롬프트가
+    # promote_hits회 이상 재현(재뚫림)되면 그때 벡터변환+verified=True로 승격 → retrieve 편입.
+    # (1회성 판정오탐·플루크가 곧장 영구 씨앗이 되는 오염을 막고, 임베딩은 될 놈에만 지출.)
+    # 실패해도 스캔은 정상 종료(try/except). 롤백: DELETE FROM attack_cases WHERE source='self_learned'.
+    corpus_feedback_enabled: bool = True
+    corpus_feedback_top_k: int = 3        # 기법(atlas)당 fitness 상위 K개만 후보 적재(폭증 차단)
+    corpus_feedback_min_len: int = 15     # 프롬프트 최소 길이(공백 제외; 너무 짧은 잡음 컷)
+    corpus_feedback_promote_hits: int = 2  # 승격 임계(재현 횟수). 1이면 즉시 승격(묵히지 않음)
+
     # ── 관측성: Langfuse (LLM 호출 트레이싱; 키 없으면 자동 비활성=no-op) ──
     # judge Tier3·코드스캐너·리포트요약의 Haiku 호출을 트레이싱(지연·토큰·비용·플로우).
     # ⚠️ 마스킹 ON이 기본 — 프롬프트/표적응답 '원문'은 Langfuse로 안 보내고 길이·메타만 전송
