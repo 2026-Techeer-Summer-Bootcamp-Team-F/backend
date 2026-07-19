@@ -11,8 +11,11 @@
 실행: docker compose exec -T -e PYTHONPATH=/app backend python scripts/smoke_deadline.py
 전제: atlas_techniques에 최소 1개 행(ci_seed.py). 없으면 SKIP.
 """
+import asyncio
 import os
 import time
+
+from celery.exceptions import SoftTimeLimitExceeded
 
 import app.engine.orchestrator as orch
 import app.tasks as tasks
@@ -35,7 +38,7 @@ class _SlowActor:
 
     async def send(self, prompt):
         """표적 응답을 흉내: SLEEP초 뒤 무해한 문자열 반환(breach 아님)."""
-        time.sleep(self.SLEEP)
+        await asyncio.sleep(self.SLEEP)   # 비블로킹(이벤트 루프 존중) — CodeRabbit #141
         return "죄송하지만 도와드릴 수 없습니다."
 
 
@@ -177,6 +180,41 @@ def test_scan_partial_finalize(db, atlas_id):
         _cleanup(db, u, t, s, objs)
 
 
+def test_scan_soft_limit_graceful(db, atlas_id):
+    """B') Celery soft time limit 백스톱 경로: run_evolution이 SoftTimeLimitExceeded를 던져도
+    run_scan은 failed가 아니라 done(부분)으로 우아 마감해야 한다(→ ack·재전달 없음).
+    deadline은 기본(600s)이라 objective 루프 검사는 통과 → run_evolution(스텁)이 soft를 던진다."""
+    tag = f"smoke-deadline-B2-{os.getpid()}"
+    u, t, s, objs = _mk_chain(db, tag, atlas_id, n_objectives=2)
+    s.status = "pending"                 # run_scan은 pending에서만 진행
+    db.commit()
+    orig_recon = tasks._run_recon
+    orig_evo = tasks.run_evolution
+
+    def _raise_soft(*_a, **_k):
+        raise SoftTimeLimitExceeded()
+
+    try:
+        tasks._run_recon = lambda *a, **k: {}       # 정찰(네트워크) 스킵
+        tasks.run_evolution = _raise_soft           # 첫 목표에서 soft 초과 흉내
+        tasks.run_scan(s.scan_id)                   # celery 태스크 동기 실행
+
+        db.expire_all()
+        s2 = db.get(Scan, s.scan_id)
+        prog = s2.progress or {}
+        ok = (s2.status == "done"
+              and prog.get("stopped_reason") == "deadline"
+              and prog.get("partial") is True)
+        print(f"  B') status={s2.status!r} stopped_reason={prog.get('stopped_reason')!r} "
+              f"partial={prog.get('partial')} → {'PASS' if ok else 'FAIL'}")
+        print("     (SoftTimeLimitExceeded → failed 아님·done(부분) 우아 마감)")
+        return ok
+    finally:
+        tasks._run_recon = orig_recon
+        tasks.run_evolution = orig_evo
+        _cleanup(db, u, t, s, objs)
+
+
 def main():
     db = SessionLocal()
     try:
@@ -190,6 +228,7 @@ def main():
             test_evolution_stops_after_current_attack(db, atlas_id),
             test_evolution_no_attack_when_past_deadline(db, atlas_id),
             test_scan_partial_finalize(db, atlas_id),
+            test_scan_soft_limit_graceful(db, atlas_id),
         ]
         ok = all(results)
         print("\nSMOKE deadline:",
