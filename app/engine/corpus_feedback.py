@@ -18,6 +18,7 @@
 """
 import logging
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -120,24 +121,29 @@ def harvest_successful_attacks(db: Session, scan) -> dict:
 
     # ── 기존 attack_cases 조회(후보 원문으로만 좁힘 — 21k 전체를 안 퍼올림) ──
     # self_learned 행 = 우리 staging(재현 갱신 대상). 그 외 source = 이미 원본 코퍼스에 있음(skip).
+    # 매칭은 정규화(대소문자·공백 무시) 키로 — 대소문자만 다른 변형이 중복 적재/hits 분산되지 않게.
+    # SQL은 lower()로 1차 좁히고(공백까지 맞추는 별도 컬럼은 오버스펙), 파이썬에서 _normalize로 확정.
     picked_prompts = list({p for _, _, p in picked})
-    existing = db.query(AttackCase).filter(AttackCase.prompt_text.in_(picked_prompts)).all()
-    staged_rows = {}                # prompt -> AttackCase(self_learned)
-    seed_prompts = set()            # 원본 코퍼스에 이미 있는 원문
+    lowered = list({p.lower() for p in picked_prompts})
+    existing = db.query(AttackCase).filter(func.lower(AttackCase.prompt_text).in_(lowered)).all()
+    staged_rows = {}                # normalized -> AttackCase(self_learned)
+    seed_norms = set()              # 원본 코퍼스에 이미 있는 정규화 원문
     for r in existing:
+        n = _normalize(r.prompt_text)
         if r.source == "self_learned":
-            staged_rows.setdefault(r.prompt_text, r)
+            staged_rows.setdefault(n, r)
         else:
-            seed_prompts.add(r.prompt_text)
+            seed_norms.add(n)
 
     promote_hits = settings.corpus_feedback_promote_hits
     staged = promoted = rehit = 0
 
     # ── ④⑤ staging 적재 / 재현 갱신 / 승격(벡터변환) ──
     for atlas_id, fitness, p in picked:
-        if p in seed_prompts:                       # 이미 원본 코퍼스 → 되먹이지 않음
+        norm = _normalize(p)
+        if norm in seed_norms:                      # 이미 원본 코퍼스 → 되먹이지 않음
             continue
-        row = staged_rows.get(p)
+        row = staged_rows.get(norm)
         if row is None:
             # 신규 후보: staging(verified=False, embedding=NULL). promote_hits=1이면 즉시 승격.
             verified_now = promote_hits <= 1
@@ -154,7 +160,7 @@ def harvest_successful_attacks(db: Session, scan) -> dict:
                 promoted += 1
             else:
                 staged += 1
-            seed_prompts.add(p)                     # 같은 배치 내 재삽입 방지
+            seed_norms.add(norm)                    # 같은 배치 내 재삽입 방지
         else:
             # 재현: hits += 1 → 임계 도달 시 벡터변환 + verified 승격
             tags = dict(row.tags or {})
