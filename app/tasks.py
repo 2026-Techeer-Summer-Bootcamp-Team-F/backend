@@ -227,6 +227,15 @@ def run_scan(scan_id: int) -> dict:
             notify_scan_report(db, scan, summary.get("ai_summary", ""))
         except Exception:  # noqa: BLE001
             log.warning("[worker] 리포트 메일 발송 실패(무시): scan_id=%s", scan_id, exc_info=True)
+        try:  # 자기강화: 뚫은 공격을 attack_cases에 되먹임(자가진화 DB) — 실패해도 스캔 무영향
+            from .engine.corpus_feedback import harvest_successful_attacks
+            fb = harvest_successful_attacks(db, scan)
+            if fb["staged"] or fb["promoted"]:
+                log.info("[worker] 자기강화: staged=%s promoted=%s scan_id=%s",
+                         fb["staged"], fb["promoted"], scan_id)
+        except Exception:  # noqa: BLE001 - 되먹임 실패는 스캔 성공에 영향 없음
+            db.rollback()
+            log.warning("[worker] 자기강화 되먹임 실패(무시): scan_id=%s", scan_id, exc_info=True)
         log.info("[worker] run_scan 완료: scan_id=%s (objectives=%s)", scan_id, len(objectives))
         result_status = "done"
         return {"scan_id": scan_id, "status": "done"}

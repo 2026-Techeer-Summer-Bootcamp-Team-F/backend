@@ -78,6 +78,18 @@ class Settings(BaseSettings):
     # 키없음/실패 시 결정론(ast+grep) 결과만으로 폴백.
     recon_llm_enabled: bool = True
 
+    # ── 자기강화: 뚫은 공격을 attack_cases에 되먹임(자가진화 DB) — 로드맵 "데이터베이스 강화" ──
+    # ON = 스캔 done 시 breach된 시도를 필터·dedup해 source="self_learned"로 되먹임.
+    # 뚫린 성공 프롬프트는 그 즉시 384d 벡터변환 + verified=True 적재 → 다음 스캔 retrieve 편입.
+    # 오탐/편중은 표적특정 필터(카나리·URL·앱이름) + 기법당 fitness top_k로 걸러진다.
+    # (promote_hits≥2로 올리면 "재현돼야 편입"하는 묵혀두기 모드 — 진화가 같은 프롬프트를 잘
+    #  재발사 안 해 실제론 거의 안 쌓임 → 기본은 즉시편입=1.)
+    # 실패해도 스캔은 정상 종료(try/except). 롤백: DELETE FROM attack_cases WHERE source='self_learned'.
+    corpus_feedback_enabled: bool = True
+    corpus_feedback_top_k: int = 3        # 기법(atlas)당 fitness 상위 K개만 적재(폭증 차단)
+    corpus_feedback_min_len: int = 15     # 프롬프트 최소 길이(공백 제외; 너무 짧은 잡음 컷)
+    corpus_feedback_promote_hits: int = 1  # 편입 임계. 1=뚫리면 즉시(기본) / ≥2=재현돼야(묵혀두기)
+
     # ── 관측성: Langfuse (LLM 호출 트레이싱; 키 없으면 자동 비활성=no-op) ──
     # judge Tier3·코드스캐너·리포트요약의 Haiku 호출을 트레이싱(지연·토큰·비용·플로우).
     # ⚠️ 마스킹 ON이 기본 — 프롬프트/표적응답 '원문'은 Langfuse로 안 보내고 길이·메타만 전송
