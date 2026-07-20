@@ -66,10 +66,29 @@ class Settings(BaseSettings):
     # 거부/키없음/실패 시 결정론 변이로 폴백(안 끊김).
     attacker_ai_enabled: bool = True
 
+    # ── 멀티턴(Crescendo): 한 에피소드=여러 턴 대화로 점진 유도 — #138 ──
+    # 기본 OFF = 기존 단발 진화만(오늘과 100% 동일). ON 하면 0세대 씨앗이 안 뚫었을 때
+    # actor 세션을 유지한 채 Haiku가 턴마다 '직전 응답 인용→한 단계 escalate'로 대화를 끈다.
+    # 정렬모델(Claude 등) 대상 지렛대. 각 턴=Attempt(parent=직전 턴)라 트리/대화 UI 그대로.
+    multiturn_enabled: bool = False
+    multiturn_max_turns: int = 3   # 한 에피소드 최대 턴(토큰·밴 방어 상한; 정체/에러 시 더 일찍 끊김)
+
     # ── 정찰: LLM 통합 판단 (ast/grep 좁힌 코드를 Haiku가 종합·앱파악) — #130 ──
     # 기본 OFF = 기존 ast+grep만. ON 하면 Haiku가 도메인·위험 판단 추가.
     # 키없음/실패 시 결정론(ast+grep) 결과만으로 폴백.
     recon_llm_enabled: bool = True
+
+    # ── 자기강화: 뚫은 공격을 attack_cases에 되먹임(자가진화 DB) — 로드맵 "데이터베이스 강화" ──
+    # ON = 스캔 done 시 breach된 시도를 필터·dedup해 source="self_learned"로 되먹임.
+    # 뚫린 성공 프롬프트는 그 즉시 384d 벡터변환 + verified=True 적재 → 다음 스캔 retrieve 편입.
+    # 오탐/편중은 표적특정 필터(카나리·URL·앱이름) + 기법당 fitness top_k로 걸러진다.
+    # (promote_hits≥2로 올리면 "재현돼야 편입"하는 묵혀두기 모드 — 진화가 같은 프롬프트를 잘
+    #  재발사 안 해 실제론 거의 안 쌓임 → 기본은 즉시편입=1.)
+    # 실패해도 스캔은 정상 종료(try/except). 롤백: DELETE FROM attack_cases WHERE source='self_learned'.
+    corpus_feedback_enabled: bool = True
+    corpus_feedback_top_k: int = 3        # 기법(atlas)당 fitness 상위 K개만 적재(폭증 차단)
+    corpus_feedback_min_len: int = 15     # 프롬프트 최소 길이(공백 제외; 너무 짧은 잡음 컷)
+    corpus_feedback_promote_hits: int = 1  # 편입 임계. 1=뚫리면 즉시(기본) / ≥2=재현돼야(묵혀두기)
 
     # ── 관측성: Langfuse (LLM 호출 트레이싱; 키 없으면 자동 비활성=no-op) ──
     # judge Tier3·코드스캐너·리포트요약의 Haiku 호출을 트레이싱(지연·토큰·비용·플로우).
@@ -87,6 +106,12 @@ class Settings(BaseSettings):
 
     # ── Redis (3역할: 캐시(벡터검색 결과)·rate-limit·Celery result backend) ──
     redis_url: str = "redis://localhost:6379/0"
+
+    # ── 스캔 전체 시간 제한: 우아한 마감(graceful deadline) — #139 ──
+    # 스캔 시작 시각 기준 이 초를 넘기면 '진행 중이던 공격 1건'만 마친 뒤 새 공격/목표를
+    # 시작하지 않고 정상 종료(부분 결과). Celery hard-kill이 아니라 앱 레벨 마감.
+    # Celery soft/hard time_limit은 이 값에서 파생(+180/+240) → celery_app.py 참조.
+    scan_deadline_seconds: int = 600
 
 
 settings = Settings()
