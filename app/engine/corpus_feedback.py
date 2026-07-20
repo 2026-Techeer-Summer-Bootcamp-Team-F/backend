@@ -69,6 +69,22 @@ def _target_specific_terms(scan, target) -> list:
     return [t.lower() for t in terms if len(t) >= 4]
 
 
+def _is_internal_target(target) -> bool:
+    """더미/내부 표적(합성 카나리·CI/시연용)은 되먹임하지 않는다 — 테스트가 코퍼스를 오염시키지 않게.
+
+    표적 URL 호스트가 내부(backend/localhost 등)이거나 경로에 /dummy/ 가 있으면 내부로 본다.
+    실표적(공개 URL)은 해당 없음.
+    """
+    cfg = (target.config or {}) if target else {}
+    url = (cfg.get("url") or (target.repo_url if target else "") or "").lower()
+    if not url:
+        return False
+    host = url.split("://")[-1].split("/")[0].split(":")[0]
+    if host in ("backend", "localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"):
+        return True
+    return "/dummy/" in url
+
+
 def harvest_successful_attacks(db: Session, scan) -> dict:
     """이 스캔의 breach된 시도를 필터·dedup해 staging 적재/승격한다.
 
@@ -79,6 +95,12 @@ def harvest_successful_attacks(db: Session, scan) -> dict:
     if not settings.corpus_feedback_enabled:
         return zero
 
+    # 더미/내부 표적(CI·시연용 합성 카나리)은 되먹이지 않는다 — 테스트가 코퍼스를 오염시키지 않게.
+    target = db.get(TargetProject, scan.target_id)
+    if _is_internal_target(target):
+        log.info("자기강화 skip(내부/더미 표적 scan=%s)", scan.scan_id)
+        return zero
+
     # ── ① 수확: 이 스캔의 breach된 시도 + 목표 atlas ──
     rows = (db.query(Attempt.prompt_text, Attempt.fitness, Objective.atlas_technique_id)
               .join(Objective, Attempt.objective_id == Objective.objective_id)
@@ -87,7 +109,6 @@ def harvest_successful_attacks(db: Session, scan) -> dict:
     if not rows:
         return zero
 
-    target = db.get(TargetProject, scan.target_id)
     blocked = _target_specific_terms(scan, target)
     min_len = settings.corpus_feedback_min_len
 
