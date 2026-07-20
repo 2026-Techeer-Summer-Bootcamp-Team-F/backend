@@ -6,7 +6,7 @@ AI 요약은 키 없으면 템플릿, ANTHROPIC_API_KEY 있으면 Haiku로 자�
 """
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import select as sa_select
 from sqlalchemy.exc import IntegrityError
@@ -17,10 +17,8 @@ from ..config import settings
 from ..db import get_db
 from ..deps import get_current_user
 from ..mitigations import get_mitigation
-from ..models import (Attempt, AtlasTechnique, Finding, Objective, Scan,
+from ..models import (Attempt, AtlasTechnique, Finding, Objective,
                       ScanReport, TargetProject, User)
-from ..recon import fetch_commit_diff
-from ..security import decrypt_token
 
 router = APIRouter(prefix="/scans", tags=["results"])
 
@@ -55,92 +53,6 @@ def _collect(db: Session, scan_id: int):
     findings = db.scalars(
         sa_select(Finding).where(Finding.attempt_id.in_(at_ids))).all() if at_ids else []
     return objs, attempts, findings
-
-
-# objective status → 버전비교용 3분류. _heat_status와 같은 의미(미확정은 방어로 세지 않음).
-_STATUS_RANK = {"breached": 2, "defended": 1, "untested": 0}
-
-
-def _obj_class(status: str) -> str:
-    """objective status → 'breached' | 'defended' | 'untested'.
-
-    pending/running은 아직 확정 안 됨(untested) → '방어 성공'으로 오집계하지 않는다.
-    그 외 종료 상태(safe/exhausted/failed)는 방어(defended).
-    """
-    if status == "breached":
-        return "breached"
-    if status in ("pending", "running"):
-        return "untested"
-    return "defended"
-
-
-def _technique_status(db: Session, scan_id: int) -> dict:
-    """스캔의 ATLAS 기법별 판정 요약 → {atlas_id: {name, status, score}} — 버전비교용(#132).
-
-    status: 'breached'|'defended'|'untested'. score: 그 기법 시도 최고 fitness.
-    같은 기법이 여러 objective로 잡히면 위험한 쪽(breached>defended>untested)으로 합친다.
-    """
-    objs, attempts, _ = _collect(db, scan_id)
-    best: dict = {}                                   # objective_id -> 최고 fitness
-    for a in attempts:
-        best[a.objective_id] = max(best.get(a.objective_id, 0.0), a.fitness or 0.0)
-    out: dict = {}
-    for o in objs:
-        score = round(best.get(o.objective_id, 0.0), 3)
-        cls = _obj_class(o.status)
-        cur = out.get(o.atlas_technique_id)
-        if cur is None:
-            tech = db.get(AtlasTechnique, o.atlas_technique_id)
-            out[o.atlas_technique_id] = {
-                "name": tech.name if tech else o.atlas_technique_id,
-                "status": cls, "score": score,
-            }
-        else:
-            if _STATUS_RANK[cls] > _STATUS_RANK[cur["status"]]:
-                cur["status"] = cls
-            cur["score"] = max(cur["score"], score)
-    return out
-
-
-def _verdict(before_status: str, after_status: str) -> str:
-    """이전→현재 판정 변화 → verdict(#132). before/after는 breached|defended만 들어온다."""
-    if before_status == "breached":
-        return "solved" if after_status == "defended" else "open"
-    # before == defended
-    return "regressed" if after_status == "breached" else "keep"
-
-
-def compare_techniques(db: Session, base_scan_id: int | None, cur_scan_id: int) -> list:
-    """두 스캔의 기법별 판정 변화 목록(#132). base 없으면(=baseline) 빈 리스트.
-
-    현재 스캔이 확정한(breached|defended) 기법을 기준으로 이전 판정과 비교한다.
-    - 현재 미확정(untested) 기법은 비교 불가라 제외한다.
-    - 이전에 없거나 미확정이면 before=null, verdict='keep'(비교 기준 없음).
-    """
-    if base_scan_id is None:
-        return []
-    prev = _technique_status(db, base_scan_id)
-    cur = _technique_status(db, cur_scan_id)
-    out = []
-    for atlas_id, c in cur.items():
-        if c["status"] == "untested":          # 현재 스캔에서 미확정 → 판정 변화 계산 불가
-            continue
-        p = prev.get(atlas_id)
-        if p and p["status"] == "untested":    # 이전이 미확정이면 비교 기준으로 못 씀
-            p = None
-        before = {"status": p["status"], "score": p["score"]} if p else None
-        verdict = _verdict(p["status"], c["status"]) if p else "keep"
-        out.append({
-            "atlas_technique_id": atlas_id,
-            "name": c["name"],
-            "before": before,
-            "after": {"status": c["status"], "score": c["score"]},
-            "verdict": verdict,
-        })
-    # 판정 우선순위: 해결/후퇴/미해결을 위로(사용자가 변화부터 보게), 유지는 아래로.
-    order = {"solved": 0, "regressed": 1, "open": 2, "keep": 3}
-    out.sort(key=lambda r: order.get(r["verdict"], 9))
-    return out
 
 
 @router.get("/{scan_id}/report")
@@ -425,64 +337,3 @@ def code_locations(scan_id: int, db: Session = Depends(get_db),
     return [loc for loc in locs if loc.get("atlas_id") in tested_atlas_ids]
 
 
-@router.get("/{scan_id}/version-diff")
-def version_diff(scan_id: int, base: int | None = None,
-                 db: Session = Depends(get_db),
-                 user: User = Depends(get_current_user)):
-    """스캔 버전 비교(#132) — 이전↔현재 코드 diff + 기법별 판정 변화. 소유권 검증(#91).
-
-    base 생략 시 같은 표적의 직전 스캔을 자동 선택. 이전 스캔이 없으면 baseline(빈 상태).
-    코드 diff는 두 스캔의 commit_sha로 GitHub compare API를 호출해 얻고, 실패해도
-    기법별 판정 변화(results)는 항상 반환한다(diff_error로 사유 안내).
-    """
-    cur = scan_owned_or_404(db, scan_id, user)
-    # base 결정: 명시되면 검증(본인·같은 표적), 아니면 직전 스캔 자동.
-    if base is not None:
-        base_scan = scan_owned_or_404(db, base, user)
-        if base_scan.target_id != cur.target_id:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                                "다른 표적의 스캔과는 비교할 수 없습니다")
-    else:
-        # 직전 '완료(done)' 스캔만 자동 기준으로. 실행중/실패 스캔이 base가 되면
-        # objective가 미확정이라 verdict가 잘못 나오므로 제외(CodeRabbit #134).
-        base_scan = db.scalars(
-            sa_select(Scan)
-            .where(Scan.target_id == cur.target_id, Scan.scan_id < scan_id,
-                   Scan.status == "done")
-            .order_by(Scan.scan_id.desc()).limit(1)).first()
-
-    base_scan_id = base_scan.scan_id if base_scan else None
-    baseline = base_scan is None
-    head_sha = cur.commit_sha
-    base_sha = base_scan.commit_sha if base_scan else None
-
-    results = compare_techniques(db, base_scan_id, scan_id)
-
-    files: list = []
-    diff_error = None
-    if baseline:
-        diff_error = "최초 스캔이라 비교할 이전 버전이 없습니다."
-    elif not base_sha or not head_sha:
-        diff_error = "커밋 정보가 없어 코드 변경점을 가져올 수 없습니다."
-    else:
-        target = db.get(TargetProject, cur.target_id)
-        token = ""
-        try:
-            owner = db.get(User, target.user_id) if target else None
-            if owner and owner.access_token_enc:
-                token = decrypt_token(owner.access_token_enc) or ""
-        except Exception:  # noqa: BLE001 - 토큰 복호화 실패 → 토큰 없이(공개 레포) 시도
-            token = ""
-        files = fetch_commit_diff(
-            target.repo_url if target else "", base_sha, head_sha, token)
-        if not files:
-            diff_error = "변경된 파일이 없거나 diff를 가져오지 못했습니다."
-
-    resp = {
-        "scan_id": scan_id, "base_scan_id": base_scan_id,
-        "head_sha": head_sha, "base_sha": base_sha,
-        "baseline": baseline, "results": results, "files": files,
-    }
-    if diff_error:
-        resp["diff_error"] = diff_error
-    return resp
