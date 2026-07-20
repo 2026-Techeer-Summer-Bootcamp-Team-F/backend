@@ -8,16 +8,18 @@ import os
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select as sa_select
+from sqlalchemy import func as sa_func, select as sa_select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import get_current_user
-from ..models import Objective, Scan, TargetProject, User, _now
+from ..models import Attempt, Finding, Objective, Scan, TargetProject, User, _now
 from ..engine.code_scanner import run_code_scan
 from ..recon import detect_http_contract, fetch_repo_sources, profile_target
 from ..schemas import ActorSaveIn, DetectIn, ProjectCreateIn, ProjectUpdateIn
 from ..security import decrypt_token
+# 위험도 가중치는 /scans/{id}/report와 반드시 같은 공식이어야 해 정본을 재사용(중복 정의 금지).
+from .results import _SEV_WEIGHT
 
 router = APIRouter(tags=["projects"])
 
@@ -194,13 +196,41 @@ def get_project(target_id: int, db: Session = Depends(get_db),
     return _project_detail(_owned_or_error(db, target_id, user))
 
 
+def _scan_severity_agg(db: Session, scan_ids: list) -> dict:
+    """스캔별 findings 심각도 집계 → {scan_id: (위험도 가중합, critical 건수)} (#144).
+
+    findings는 objective를 직접 안 들고 attempt를 거치므로 finding→attempt→objective로
+    조인해 scan_id·severity로 GROUP BY 한다. 쿼리 1회이며 바인딩 파라미터도 스캔 수만큼만
+    쓴다(attempt_id를 IN으로 나열하면 SQLite 변수 한도에 걸림).
+    반환 위험도는 상한 적용 전 원시 가중합(호출부에서 100 상한).
+    """
+    if not scan_ids:
+        return {}
+    rows = db.execute(
+        sa_select(Objective.scan_id, Finding.severity, sa_func.count())
+        .select_from(Finding)
+        .join(Attempt, Finding.attempt_id == Attempt.attempt_id)
+        .join(Objective, Attempt.objective_id == Objective.objective_id)
+        .where(Objective.scan_id.in_(scan_ids))
+        .group_by(Objective.scan_id, Finding.severity)).all()
+    out: dict = {}
+    for sid, sev, cnt in rows:
+        risk, critical = out.get(sid, (0, 0))
+        # severity 미기재/오타는 report와 동일하게 low 가중치(5)로 처리.
+        out[sid] = (risk + _SEV_WEIGHT.get(sev or "low", 5) * cnt,
+                    critical + (cnt if sev == "critical" else 0))
+    return out
+
+
 @router.get("/projects/{target_id}/scan-history")
 def scan_history(target_id: int, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
     """스캔 버전 관리용 이력(#132) — 프로젝트의 스캔을 최신순으로 요약. 소유권 검증(§3).
 
-    각 스캔: id·날짜·commit_sha·상태 + objective 집계(총/방어/돌파). objective는 한 번에
-    조회해 Python에서 스캔별 집계(N+1 회피). 최대 50건.
+    각 스캔: id·날짜·commit_sha·상태 + objective 집계(총/방어/돌파) + findings 집계
+    (risk_score·critical_count, #144). 비교 페이지 §4 추세가 스캔 수만큼 /report를 부르지
+    않도록 여기서 함께 준다. objective·attempt·finding을 각각 한 번에 조회해 Python에서
+    스캔별 집계하므로 쿼리는 스캔 수와 무관하게 고정(N+1 회피). 최대 50건.
     """
     target = _owned_or_error(db, target_id, user)
     scans = db.scalars(
@@ -221,9 +251,11 @@ def scan_history(target_id: int, db: Session = Depends(get_db),
             elif st not in ("pending", "running"):     # safe/exhausted/failed = 방어 확정
                 defended += 1
             agg[sid] = (total + 1, defended, breached)
+    sev_agg = _scan_severity_agg(db, scan_ids)
     out = []
     for s in scans:
         total, defended, breached = agg.get(s.scan_id, (0, 0, 0))
+        risk, critical = sev_agg.get(s.scan_id, (0, 0))
         out.append({
             "scan_id": s.scan_id,
             "date": s.created_at.date().isoformat() if s.created_at else None,
@@ -232,6 +264,9 @@ def scan_history(target_id: int, db: Session = Depends(get_db),
             "total_objectives": total,
             "defended": defended,
             "breach_count": breached,
+            # /scans/{id}/report의 risk_score와 같은 공식(가중합, 100 상한).
+            "risk_score": float(min(100, risk)),
+            "critical_count": critical,
         })
     return {"target_id": target_id, "project_name": target.project_name, "scans": out}
 
