@@ -8,6 +8,7 @@ FastAPI TestClient + get_current_user 오버라이드(smoke_projects 패턴). �
 검증:
   - _parse_patch 순수 파싱(context 양쪽·del 좌·add 우·신규파일 before=null)
   - scan-history: 최신순·commit_sha·총/방어/돌파 집계
+  - scan-history 위험도(#144): risk_score·critical_count, 100 상한, /report와 값 일치
   - version-diff: solved/open/keep/regressed verdict + 우선순위 정렬
   - baseline(이전 스캔 없음) → results:[] + diff_error
   - GitHub 없는 diff → files:[] + diff_error (raw 500 없음)
@@ -19,8 +20,9 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.db import SessionLocal
+from app.api.projects import _scan_severity_agg
 from app.deps import get_current_user
-from app.models import (Attempt, AtlasTechnique, Objective, Scan,
+from app.models import (Attempt, AtlasTechnique, Finding, Objective, Scan,
                         TargetProject, User)
 from app.recon import _parse_patch
 
@@ -38,6 +40,13 @@ _CUR = {"AML.T0056": "safe", "AML.T0057": "breached",
         "AML.T0051.000": "breached", "AML.T0054": "safe", "AML.T0053": "pending"}
 _EXPECT = {"AML.T0056": "solved", "AML.T0057": "open",
            "AML.T0051.000": "regressed", "AML.T0054": "keep"}
+# 스캔별 findings 심각도(#144 위험도·critical 집계용). 기법당 여러 건 가능.
+#   prev: critical×2 + high = 40+40+25 = 105 → 100 상한 / critical_count 2
+#   cur : high + medium + 빈값(=low 폴백) = 25+10+5 = 40 / critical_count 0
+_SEV_PREV = {"AML.T0056": ["critical", "critical"], "AML.T0057": ["high"]}
+_SEV_CUR = {"AML.T0057": ["high"], "AML.T0051.000": ["medium", ""]}
+_EXP_RISK = {"prev": 100.0, "cur": 40.0}
+_EXP_CRIT = {"prev": 2, "cur": 0}
 
 
 def check(name, cond):
@@ -45,8 +54,12 @@ def check(name, cond):
     print(f"  {'✅' if cond else '❌'} {name}")
 
 
-def _seed_scan(db, target_id, sha, status_map):
-    """스캔 1건 + 기법별 objective/attempt 시드. status_map[atlas]=breached|safe."""
+def _seed_scan(db, target_id, sha, status_map, sev_map=None):
+    """스캔 1건 + 기법별 objective/attempt 시드. status_map[atlas]=breached|safe.
+
+    sev_map[atlas]=[심각도…]가 있으면 그 기법의 attempt에 findings를 달아
+    scan-history의 위험도·critical 집계(#144)를 검증할 수 있게 한다.
+    """
     scan = Scan(target_id=target_id, status="done", commit_sha=sha)
     db.add(scan)
     db.commit()
@@ -57,8 +70,13 @@ def _seed_scan(db, target_id, sha, status_map):
         db.commit()
         db.refresh(obj)
         breached = st == "breached"
-        db.add(Attempt(objective_id=obj.objective_id, prompt_text="p",
-                       fitness=0.9 if breached else 0.2, breached=breached))
+        attempt = Attempt(objective_id=obj.objective_id, prompt_text="p",
+                          fitness=0.9 if breached else 0.2, breached=breached)
+        db.add(attempt)
+        db.commit()
+        db.refresh(attempt)
+        for sev in (sev_map or {}).get(atlas_id, []):
+            db.add(Finding(attempt_id=attempt.attempt_id, severity=sev))
     db.commit()
     return scan.scan_id
 
@@ -78,8 +96,8 @@ def setup():
         target = TargetProject(user_id=owner.user_id, project_name=_PROJ,
                                repo_url="http://not-github/r")  # github 아님 → diff 즉시 []
         db.add(target); db.commit(); db.refresh(target)
-        prev_id = _seed_scan(db, target.target_id, "baaaaaa1234", _PREV)
-        cur_id = _seed_scan(db, target.target_id, "ccccccc5678", _CUR)
+        prev_id = _seed_scan(db, target.target_id, "baaaaaa1234", _PREV, _SEV_PREV)
+        cur_id = _seed_scan(db, target.target_id, "ccccccc5678", _CUR, _SEV_CUR)
         return owner.user_id, other.user_id, target.target_id, prev_id, cur_id
     finally:
         db.close()
@@ -94,6 +112,11 @@ def _cleanup(db):
             oids = [o.objective_id for o in db.query(Objective).filter(
                 Objective.scan_id.in_(sids))]
             if oids:
+                aids = [a.attempt_id for a in db.query(Attempt).filter(
+                    Attempt.objective_id.in_(oids))]
+                if aids:                      # findings가 attempt를 FK로 잡고 있어 먼저 삭제
+                    db.query(Finding).filter(Finding.attempt_id.in_(aids)).delete(
+                        synchronize_session=False)
                 db.query(Attempt).filter(Attempt.objective_id.in_(oids)).delete(
                     synchronize_session=False)
             db.query(Objective).filter(Objective.scan_id.in_(sids)).delete(
@@ -155,6 +178,31 @@ def main():
         check("scan-history 집계(총5·방어2·돌파2, pending 방어 제외)",
               cur_row["total_objectives"] == 5 and cur_row["defended"] == 2
               and cur_row["breach_count"] == 2)
+
+        # --- scan-history 위험도·critical 집계(#144, §4 추세용) ---
+        prev_row = scans[1]
+        check("scan-history risk_score(cur=40 · 빈 severity는 low 폴백)",
+              cur_row["risk_score"] == _EXP_RISK["cur"])
+        check("scan-history risk_score 100 상한(prev 105→100)",
+              prev_row["risk_score"] == _EXP_RISK["prev"])
+        check("scan-history critical_count(prev 2 · cur 0)",
+              prev_row["critical_count"] == _EXP_CRIT["prev"]
+              and cur_row["critical_count"] == _EXP_CRIT["cur"])
+        # 공식이 갈라지지 않도록 /report 정본과 교차 검증.
+        for row in (cur_row, prev_row):
+            rep = client.get(f"/scans/{row['scan_id']}/report").json()
+            check(f"#{row['scan_id']} risk_score == /report 값",
+                  row["risk_score"] == rep["risk_score"])
+            check(f"#{row['scan_id']} critical_count == /report severity_counts",
+                  row["critical_count"] == rep["severity_counts"].get("critical", 0))
+        # findings 없는 스캔은 집계 dict에 아예 안 잡힘 → 응답에서 0.0/0으로 폴백.
+        db = SessionLocal()
+        try:
+            check("findings 없는 스캔은 집계에서 빠짐(0.0 폴백 경로)",
+                  _scan_severity_agg(db, [cur_id, -1]).get(-1) is None
+                  and _scan_severity_agg(db, []) == {})
+        finally:
+            db.close()
 
         # --- version-diff (cur, base 자동=prev) ---
         r = client.get(f"/scans/{cur_id}/version-diff")
