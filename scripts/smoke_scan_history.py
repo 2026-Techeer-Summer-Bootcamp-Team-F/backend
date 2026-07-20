@@ -1,20 +1,17 @@
 # -*- coding: utf-8 -*-
-"""스캔 버전 관리 스모크(#132) — scan-history + version-diff.
+"""스캔 이력 스모크(#150) — scan-history.
 
 FastAPI TestClient + get_current_user 오버라이드(smoke_projects 패턴). 두 스캔을 직접
-시드(objective 판정 상태·attempt fitness)해 기법별 판정 변화를 계산한다. 네트워크 없이
-동작(리포지토리를 github가 아닌 URL로 둬 fetch_commit_diff가 즉시 []).
+시드(objective 판정 상태·attempt fitness·findings 심각도)해 이력 집계를 검증한다.
+코드 diff(version-diff)는 폐기돼 이 스크립트에서도 제거했다 — 비교 분석은 프론트가
+heatmap·findings로 계산한다(frontend#45).
 
 검증:
-  - _parse_patch 순수 파싱(context 양쪽·del 좌·add 우·신규파일 before=null)
   - scan-history: 최신순·commit_sha·총/방어/돌파 집계
   - scan-history 위험도(#144): risk_score·critical_count, 100 상한, /report와 값 일치
-  - version-diff: solved/open/keep/regressed verdict + 우선순위 정렬
-  - baseline(이전 스캔 없음) → results:[] + diff_error
-  - GitHub 없는 diff → files:[] + diff_error (raw 500 없음)
-  - 소유권: 타인 scan-history 403 / version-diff 404, base 다른표적 400
+  - 소유권: 타인 scan-history 403
 
-실행: docker compose exec -T -e PYTHONPATH=/app backend python scripts/smoke_version_diff.py
+실행: docker compose exec -T -e PYTHONPATH=/app backend python scripts/smoke_scan_history.py
 """
 from fastapi.testclient import TestClient
 
@@ -24,22 +21,17 @@ from app.api.projects import _scan_severity_agg
 from app.deps import get_current_user
 from app.models import (Attempt, AtlasTechnique, Finding, Objective, Scan,
                         TargetProject, User)
-from app.recon import _parse_patch
 
 results = []
 _GH = ["smoke-vc-owner", "smoke-vc-other"]
 _PROJ = "smoke-vc-proj"
-# prev → cur 로 설계한 기법별 판정(status: breached | safe)과 기대 verdict.
-#   T0056: breached→safe = solved / T0057: breached→breached = open
-#   T0051.000: safe→breached = regressed / T0054: safe→safe = keep
+# prev → cur 로 설계한 기법별 판정(status: breached | safe | pending).
 _TECHS = ["AML.T0056", "AML.T0057", "AML.T0051.000", "AML.T0054", "AML.T0053"]
 _PREV = {"AML.T0056": "breached", "AML.T0057": "breached",
          "AML.T0051.000": "safe", "AML.T0054": "safe"}
-# T0053: 현재 스캔에서 미확정(pending) — 방어로 세면 안 되고 version-diff에서도 제외돼야 함.
+# T0053: 현재 스캔에서 미확정(pending) — 방어(defended)로 오집계되면 안 된다.
 _CUR = {"AML.T0056": "safe", "AML.T0057": "breached",
         "AML.T0051.000": "breached", "AML.T0054": "safe", "AML.T0053": "pending"}
-_EXPECT = {"AML.T0056": "solved", "AML.T0057": "open",
-           "AML.T0051.000": "regressed", "AML.T0054": "keep"}
 # 스캔별 findings 심각도(#144 위험도·critical 집계용). 기법당 여러 건 가능.
 #   prev: critical×2 + high = 40+40+25 = 105 → 100 상한 / critical_count 2
 #   cur : high + medium + 빈값(=low 폴백) = 25+10+5 = 40 / critical_count 0
@@ -147,16 +139,6 @@ def as_user(uid):
 
 
 def main():
-    # --- 순수 파싱 검증(네트워크 무관) ---
-    before, after = _parse_patch("@@ -1,2 +1,2 @@\n ctx\n-old\n+new")
-    check("_parse_patch context 양쪽 유지",
-          before[0] == {"n": 1, "t": "", "c": "ctx"} and after[0] == {"n": 1, "t": "", "c": "ctx"})
-    check("_parse_patch del=좌측만 / add=우측만",
-          before[1]["t"] == "del" and before[1]["c"] == "old"
-          and after[1]["t"] == "add" and after[1]["c"] == "new")
-    b2, a2 = _parse_patch("@@ -0,0 +1,1 @@\n+x")
-    check("_parse_patch 신규파일 before=null", b2 is None and a2 and a2[0]["t"] == "add")
-
     owner_id, other_id, tid, prev_id, cur_id = setup()
     client = TestClient(app)
     try:
@@ -204,55 +186,16 @@ def main():
         finally:
             db.close()
 
-        # --- version-diff (cur, base 자동=prev) ---
-        r = client.get(f"/scans/{cur_id}/version-diff")
-        check("version-diff 200", r.status_code == 200)
-        vd = r.json()
-        check("version-diff base 자동=prev", vd.get("base_scan_id") == prev_id)
-        check("version-diff baseline False", vd.get("baseline") is False)
-        check("version-diff sha 쌍", vd.get("base_sha") == "baaaaaa1234"
-              and vd.get("head_sha") == "ccccccc5678")
-        verdicts = {x["atlas_technique_id"]: x["verdict"] for x in vd.get("results", [])}
-        check("verdict solved/open/keep/regressed 전부 일치", verdicts == _EXPECT)
-        check("미확정(pending) 기법은 version-diff에서 제외",
-              "AML.T0053" not in verdicts and len(vd["results"]) == 4)
-        # before/after status 확인(한 건)
-        solved = next(x for x in vd["results"] if x["atlas_technique_id"] == "AML.T0056")
-        check("solved before=breached/after=defended",
-              solved["before"]["status"] == "breached" and solved["after"]["status"] == "defended")
-        # 정렬 우선순위: solved → regressed → open → keep
-        order = [x["verdict"] for x in vd["results"]]
-        check("version-diff 정렬(변화 먼저)",
-              order == ["solved", "regressed", "open", "keep"])
-        # GitHub 없는 diff → files 비고 diff_error
-        check("version-diff files 빈배열", vd.get("files") == [])
-        check("version-diff diff_error 안내", bool(vd.get("diff_error")))
-
-        # --- version-diff 명시 base == 자동 ---
-        r2 = client.get(f"/scans/{cur_id}/version-diff?base={prev_id}")
-        check("version-diff 명시 base 동일 결과",
-              r2.status_code == 200 and r2.json().get("base_scan_id") == prev_id)
-
-        # --- baseline: prev 스캔(이전 없음) ---
-        r = client.get(f"/scans/{prev_id}/version-diff")
-        check("version-diff baseline True", r.json().get("baseline") is True)
-        check("version-diff baseline results 빈배열", r.json().get("results") == [])
-        check("version-diff baseline diff_error", bool(r.json().get("diff_error")))
-
         # --- 소유권 ---
         as_user(other_id)
         r = client.get(f"/projects/{tid}/scan-history")
         check("타인 scan-history → 403", r.status_code == 403)
-        r = client.get(f"/scans/{cur_id}/version-diff")
-        check("타인 version-diff → 404", r.status_code == 404)
-        r = client.get(f"/scans/{cur_id}/version-diff?base={prev_id}")
-        check("없는/타인 scan version-diff → 404", r.status_code == 404)
     finally:
         app.dependency_overrides.clear()
         teardown()
 
     ok = all(c for _, c in results)
-    print(f"\nSMOKE version-diff: {'PASS ✅' if ok else 'FAIL ❌'}")
+    print(f"\nSMOKE scan-history: {'PASS ✅' if ok else 'FAIL ❌'}")
     return 0 if ok else 1
 
 
