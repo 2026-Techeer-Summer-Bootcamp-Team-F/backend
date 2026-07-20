@@ -7,6 +7,7 @@ AI 요약은 키 없으면 템플릿, ANTHROPIC_API_KEY 있으면 Haiku로 자�
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import select as sa_select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -299,6 +300,30 @@ def _build_summary(scan, rep, finds_detail) -> dict:
     except Exception:  # noqa: BLE001 - 키 무효/네트워크 등 → 템플릿 폴백(요약은 끊기면 안 됨)
         return {"ai_summary": template, "source": "template-fallback"}
 
+
+
+class DescribePromptRequest(BaseModel):
+    prompt: str
+
+
+@router.post("/describe-prompt")
+def describe_prompt_endpoint(req: DescribePromptRequest, user: User = Depends(get_current_user)):
+    """단일 프롬프트 유형 설명 — Haiku로 어떤 공격인지 20자 이내 한 줄 설명. 키 없으면 빈 문자열."""
+    key = settings.anthropic_api_key
+    if not key or not req.prompt.strip():
+        return {"description": ""}
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=key)
+        msg = client.messages.create(
+            model=settings.attacker_model, max_tokens=60,
+            messages=[{"role": "user", "content":
+                       f"다음 AI 공격 프롬프트를 보고 어떤 유형의 공격인지 "
+                       f"20자 이내 한국어로 설명해줘. 설명만 출력(따옴표·마침표 없이):\n{req.prompt[:300]}"}])
+        text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        return {"description": text.strip()}
+    except Exception:  # noqa: BLE001
+        return {"description": ""}
 
 
 @router.get("/{scan_id}/summary")
