@@ -103,7 +103,10 @@ def _pgvector_retrieve(db, atlas_id, attack_type, k, qv) -> list:
         "- (case when ac.verified then :bonus else 0 end) "
         "limit :k"
     )
-    rows = db.execute(sql, params).fetchall()
+    # SAVEPOINT: pgvector 미설치 환경(CI 등)에서 ::vector 실패 시 바깥 세션/스캔 트랜잭션을
+    # 오염시키지 않게 격리 → _vector_retrieve의 except가 numpy 폴백으로 안전하게 이어감.
+    with db.begin_nested():
+        rows = db.execute(sql, params).fetchall()
     if not rows:
         return None
     ids = [r.id for r in rows]
