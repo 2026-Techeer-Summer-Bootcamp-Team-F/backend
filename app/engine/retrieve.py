@@ -12,7 +12,7 @@ objective(목표) + 정찰정보 → attack_cases 에서 관련 공격 K개.
 """
 import logging
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy import select as sa_select
 from sqlalchemy.orm import Session
 
@@ -58,10 +58,67 @@ def _metadata_retrieve(db, atlas_id, attack_type, k) -> list:
 
 
 def _vector_retrieve(db, atlas_id, attack_type, k, query_text) -> list:
-    """정찰 질의 임베딩 → 카테고리 선필터 후보를 코사인 랭킹 → top-k. 실패 시 None(→ 폴백)."""
+    """질의 임베딩 → 벡터 최근접 top-k. 실패 시 None(→ 메타필터 폴백).
+
+    - PostgreSQL(운영): attack_cases.embedding을 vector 캐스트해 pgvector `<=>`(코사인) DB단 최근접
+      (자기학습·신규 인제스트 전부 포함 — 단일 원천).
+    - 그 외(SQLite/CI) 또는 pg 경로 실패: 앱단 numpy 코사인 폴백(이식성).
+    """
     qv = embed_query(query_text)
     if qv is None:
         return None
+    # 운영(PostgreSQL): pgvector HNSW 우선
+    try:
+        if db.get_bind().dialect.name == "postgresql":
+            res = _pgvector_retrieve(db, atlas_id, attack_type, k, qv)
+            if res:
+                return res
+    except Exception as e:  # noqa: BLE001 - pgvector 경로 실패 → numpy 폴백(안 죽음)
+        log.warning("retrieve: pgvector 경로 실패 → numpy 폴백: %s", e)
+    return _numpy_retrieve(db, atlas_id, attack_type, k, qv)
+
+
+def _pgvector_retrieve(db, atlas_id, attack_type, k, qv) -> list:
+    """attack_cases.embedding(JSON)을 vector로 캐스트 → pgvector `<=>` 코사인 최근접 top-k.
+
+    attack_cases를 직접 검색하므로 자기학습(self_learned)·신규 인제스트까지 전부 포함(단일 원천).
+    별도 attack_embeddings 스냅샷을 안 써서 동기화 누락(=검색 사각지대)이 원천봉쇄된다.
+    카테고리 필터는 스캔에 그대로 적용돼 소수 유형도 정상. verified 보너스는 SQL에서 가산.
+    질의 벡터는 런타임 생성값(embed_query) → pgvector 리터럴로 바인딩.
+    """
+    lit = "[" + ",".join(repr(float(x)) for x in qv) + "]"
+    where = "where ac.embedding is not null"
+    params = {"qv": lit, "bonus": _VERIFIED_BONUS, "k": k}
+    if atlas_id:
+        where += " and ac.atlas_technique_id = :atlas"
+        params["atlas"] = atlas_id
+    elif attack_type:
+        where += " and ac.attack_type = :atype"
+        params["atype"] = attack_type
+    sql = text(
+        "select ac.id as id "
+        "from attack_cases ac "
+        f"{where} "
+        "order by ((ac.embedding::text)::vector <=> (:qv)::vector) "
+        "- (case when ac.verified then :bonus else 0 end) "
+        "limit :k"
+    )
+    # SAVEPOINT: pgvector 미설치 환경(CI 등)에서 ::vector 실패 시 바깥 세션/스캔 트랜잭션을
+    # 오염시키지 않게 격리 → _vector_retrieve의 except가 numpy 폴백으로 안전하게 이어감.
+    with db.begin_nested():
+        rows = db.execute(sql, params).fetchall()
+    if not rows:
+        return None
+    ids = [r.id for r in rows]
+    objs = db.execute(sa_select(AttackCase).where(AttackCase.id.in_(ids))).scalars().all()
+    by_id = {o.id: o for o in objs}
+    result = [by_id[i] for i in ids if i in by_id]
+    log.info("retrieve(pgvector 코사인): top %d (atlas=%s)", len(result), atlas_id)
+    return result
+
+
+def _numpy_retrieve(db, atlas_id, attack_type, k, qv) -> list:
+    """앱단 numpy 코사인 폴백(pgvector 없는 DB/CI). 카테고리 선필터 후보를 랭킹."""
     try:
         import numpy as np
     except Exception:   # noqa: BLE001 - numpy 없으면(플래그 off 배포) 폴백
@@ -102,5 +159,5 @@ def _vector_retrieve(db, atlas_id, attack_type, k, query_text) -> list:
         return None
     scored.sort(key=lambda t: t[0], reverse=True)
     top = [c for _, c in scored[:k]]
-    log.info("retrieve(벡터): 후보 %d → top %d (atlas=%s)", len(scored), len(top), atlas_id)
+    log.info("retrieve(numpy 폴백): 후보 %d → top %d (atlas=%s)", len(scored), len(top), atlas_id)
     return top
