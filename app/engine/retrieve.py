@@ -60,7 +60,8 @@ def _metadata_retrieve(db, atlas_id, attack_type, k) -> list:
 def _vector_retrieve(db, atlas_id, attack_type, k, query_text) -> list:
     """질의 임베딩 → 벡터 최근접 top-k. 실패 시 None(→ 메타필터 폴백).
 
-    - PostgreSQL(운영): pgvector `<=>`(코사인) + HNSW 인덱스로 DB단 최근접.
+    - PostgreSQL(운영): attack_cases.embedding을 vector 캐스트해 pgvector `<=>`(코사인) DB단 최근접
+      (자기학습·신규 인제스트 전부 포함 — 단일 원천).
     - 그 외(SQLite/CI) 또는 pg 경로 실패: 앱단 numpy 코사인 폴백(이식성).
     """
     qv = embed_query(query_text)
@@ -78,41 +79,38 @@ def _vector_retrieve(db, atlas_id, attack_type, k, query_text) -> list:
 
 
 def _pgvector_retrieve(db, atlas_id, attack_type, k, qv) -> list:
-    """attack_embeddings(vector 384) 코사인 최근접 → top-k. HNSW 인덱스 사용.
+    """attack_cases.embedding(JSON)을 vector로 캐스트 → pgvector `<=>` 코사인 최근접 top-k.
 
+    attack_cases를 직접 검색하므로 자기학습(self_learned)·신규 인제스트까지 전부 포함(단일 원천).
+    별도 attack_embeddings 스냅샷을 안 써서 동기화 누락(=검색 사각지대)이 원천봉쇄된다.
+    카테고리 필터는 스캔에 그대로 적용돼 소수 유형도 정상. verified 보너스는 SQL에서 가산.
     질의 벡터는 런타임 생성값(embed_query) → pgvector 리터럴로 바인딩.
-    인덱스 유지 위해 순수 `<=>` 거리로 상위 후보를 뽑고, verified 보너스는 파이썬 재랭킹.
     """
     lit = "[" + ",".join(repr(float(x)) for x in qv) + "]"
-    where = ""
-    params = {"qv": lit}
+    where = "where ac.embedding is not null"
+    params = {"qv": lit, "bonus": _VERIFIED_BONUS, "k": k}
     if atlas_id:
-        where = "where ac.atlas_technique_id = :atlas"
+        where += " and ac.atlas_technique_id = :atlas"
         params["atlas"] = atlas_id
     elif attack_type:
-        where = "where ac.attack_type = :atype"
+        where += " and ac.attack_type = :atype"
         params["atype"] = attack_type
-    params["fetch"] = min(max(k * 4, k), settings.retrieve_candidate_cap)
     sql = text(
-        "select ac.id as id, ac.verified as verified, "
-        "(ae.embedding <=> (:qv)::vector) as dist "
-        "from attack_embeddings ae join attack_cases ac on ac.id = ae.attack_case_id "
+        "select ac.id as id "
+        "from attack_cases ac "
         f"{where} "
-        "order by ae.embedding <=> (:qv)::vector limit :fetch"
+        "order by ((ac.embedding::text)::vector <=> (:qv)::vector) "
+        "- (case when ac.verified then :bonus else 0 end) "
+        "limit :k"
     )
-    # 카테고리 필터 + HNSW: iterative scan(pgvector 0.8+)이라야 필터된 최근접이 제대로 나온다.
-    # (없으면 global 최근접이 다수 유형(prompt_injection)에 쏠려 소수 유형은 0건.) SAVEPOINT로 실패 격리.
-    with db.begin_nested():
-        db.execute(text("set local hnsw.iterative_scan = relaxed_order"))
-        rows = db.execute(sql, params).fetchall()
+    rows = db.execute(sql, params).fetchall()
     if not rows:
         return None
-    ranked = sorted(rows, key=lambda r: r.dist - (_VERIFIED_BONUS if r.verified else 0.0))
-    ids = [r.id for r in ranked[:k]]
+    ids = [r.id for r in rows]
     objs = db.execute(sa_select(AttackCase).where(AttackCase.id.in_(ids))).scalars().all()
     by_id = {o.id: o for o in objs}
     result = [by_id[i] for i in ids if i in by_id]
-    log.info("retrieve(pgvector HNSW): 후보 %d → top %d (atlas=%s)", len(rows), len(result), atlas_id)
+    log.info("retrieve(pgvector 코사인): top %d (atlas=%s)", len(result), atlas_id)
     return result
 
 
