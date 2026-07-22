@@ -133,27 +133,47 @@ def run_evolution(db, scan_id: int, objective, target, canary,
         if v["verdict"] == "error":
             payload["error"] = resp[:200]
         publish(scan_id, "attempt", payload, db=db, objective_id=objective.objective_id)
+        # 증거 없는 Haiku 돌파(의심) 후보를 최고점으로 기억 — 확정 돌파 없이 끝나면 _finalize가
+        # 의심 finding 1건 기록. verdict는 safe라 루프는 계속 진화(확정 증거 탐색). — #157
+        if v.get("confidence") == "suspected":
+            nonlocal suspected
+            if suspected is None or v["score"] > suspected[1]["score"]:
+                suspected = (at, v)
         return at
 
     def _record_finding(at, v):
+        # 확신도(#157): 결정론적 증거(카나리·sysprompt·PII)=confirmed, 증거 없는 AI 판정=suspected.
+        confidence = v.get("confidence", "confirmed")
+        confirmed = confidence != "suspected"
+        # 확정: 카나리=critical, 그 외 증거=high. 의심=medium(재확인 필요, risk 가중치도 낮음).
+        severity = ("critical" if (confirmed and v.get("canary_hit"))
+                    else "high" if confirmed else "medium")
         evidence = json.dumps({
             "prompt": at.prompt_text, "response": at.response_text,
-            "canary_hit": v.get("canary_hit"), "stage": v.get("stage")},
+            "canary_hit": v.get("canary_hit"), "stage": v.get("stage"),
+            "confidence": confidence},
             ensure_ascii=False)
         db.add(Finding(
-            attempt_id=at.attempt_id,
-            severity="critical" if v.get("canary_hit") else "high",
+            attempt_id=at.attempt_id, severity=severity, confidence=confidence,
             evidence=evidence,
             # 완화 스냅샷 = 정본 라이브러리 요약(응답은 results.py가 전체 구조화 반환, #79)
             mitigation=get_mitigation(atlas_id)["summary"]))
-        objective.status = "breached"
+        objective.status = "breached" if confirmed else "suspected"
         db.commit()
-        metrics.BREACHES.labels(atlas=atlas_id or "unknown").inc()   # 침투(기법별) (#93)
+        if confirmed:
+            metrics.BREACHES.labels(atlas=atlas_id or "unknown").inc()   # 침투(기법별) (#93)
         publish(scan_id, "finding", {
             "attempt_id": at.attempt_id, "atlas": atlas_id,
-            "severity": "critical" if v.get("canary_hit") else "high",
+            "severity": severity, "confidence": confidence,
             "canary_hit": v.get("canary_hit")},
             db=db, objective_id=objective.objective_id)
+
+    def _finalize():
+        """확정 돌파 없이 objective가 끝날 때, 의심 후보가 있으면 의심 finding 1건만 기록(멱등). — #157"""
+        nonlocal suspected
+        if suspected is not None:
+            _record_finding(suspected[0], suspected[1])
+            suspected = None
 
     # ── 0세대: 씨앗 그대로 발사 (LLM 안 씀 = 쌈) ──
     # 정찰정보로 의미검색 질의 구성(RETRIEVE_VECTOR_ENABLED off면 retrieve가 무시 → 기존과 동일).
@@ -171,15 +191,17 @@ def run_evolution(db, scan_id: int, objective, target, canary,
     }, db=db, objective_id=objective.objective_id)
     population: list = []
     best = 0.0
+    suspected = None     # 증거 없는 Haiku 돌파(의심) 후보 (at, v) — 확정 돌파 없이 끝나면 finding 1건 — #157
     history: list = []   # 이 objective의 시도 히스토리(공격자 AI few-shot용) — #130
     for seed_text in seed_texts:
         # 우아한 마감(#139): 새 공격 시작 전 경과시간 검사. 초과면 새 씨앗을 발사하지 않고
         # 반환(진행 중 공격 없음 — 이 지점이 발사 직전이므로). status 미변경 → untested.
         if deadline is not None and time.monotonic() >= deadline:
+            _finalize()
             return False
         _publish_started(seed_text, 0, None)      # 발사 직전 = 채팅 공격 말풍선(#102)
         resp = _fire(actor, seed_text)
-        v = judge(resp, canary, system_prompt=profile["system_prompt"], objective=atlas_name)
+        v = judge(resp, canary, system_prompt=profile["system_prompt"], objective=atlas_name, atlas_id=atlas_id)
         at = _record_attempt(seed_text, resp, v, 0, None, None)
         history.append({"prompt": seed_text, "response": resp,
                         "verdict": v["verdict"], "score": v["score"]})
@@ -197,7 +219,7 @@ def run_evolution(db, scan_id: int, objective, target, canary,
             "population": len(population)}, db=db, objective_id=objective.objective_id)
 
         def _cres_judge(resp):
-            return judge(resp, canary, system_prompt=profile["system_prompt"], objective=atlas_name)
+            return judge(resp, canary, system_prompt=profile["system_prompt"], objective=atlas_name, atlas_id=atlas_id)
 
         def _cres_plan(conversation, turn_i):
             return next_turn(atlas_id, atlas_name, profile, conversation,
@@ -227,6 +249,7 @@ def run_evolution(db, scan_id: int, objective, target, canary,
         # 우아한 마감(#139): 세대(=공격 1건) 시작 전 검사. 초과면 새 세대를 열지 않고 반환
         # (직전 세대까지 결과는 이미 저장됨). status 미변경 → 부분(untested) 집계.
         if deadline is not None and time.monotonic() >= deadline:
+            _finalize()
             return False
         publish(scan_id, "progress", {
             "phase": "evolve", "generation": gen, "best_score": round(best, 3),
@@ -234,6 +257,7 @@ def run_evolution(db, scan_id: int, objective, target, canary,
         if not population:
             objective.status = "exhausted"
             db.commit()
+            _finalize()
             return False
 
         step += 1
@@ -256,7 +280,7 @@ def run_evolution(db, scan_id: int, objective, target, canary,
             child, improvement = mutate(parent.prompt, op, [n.prompt for n in population])
         _publish_started(child, gen, op, improvement)      # 발사 직전 = 채팅 공격 말풍선(#102)
         resp = _fire(actor, child)
-        v = judge(resp, canary, system_prompt=profile["system_prompt"], objective=atlas_name)
+        v = judge(resp, canary, system_prompt=profile["system_prompt"], objective=atlas_name, atlas_id=atlas_id)
         at = _record_attempt(child, resp, v, gen, parent.attempt_id, op, improvement)
         history.append({"prompt": child, "response": resp,
                         "verdict": v["verdict"], "score": v["score"]})
@@ -285,9 +309,11 @@ def run_evolution(db, scan_id: int, objective, target, canary,
         if stagnation >= STAGNATION_LIMIT and gen >= 2:
             objective.status = "safe"
             db.commit()
+            _finalize()
             return False
 
     if objective.status == "pending" or objective.status == "running":
         objective.status = "safe"
         db.commit()
+    _finalize()
     return False
