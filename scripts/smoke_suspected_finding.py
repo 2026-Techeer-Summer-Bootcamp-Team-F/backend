@@ -31,14 +31,15 @@ class _FakeSeed:
 
 
 class _Actor:
-    """고정 응답을 돌려주는 가짜 액터(외부 HTTP 없음)."""
+    """고정 응답을 돌려주는 가짜 액터(외부 HTTP 없음). delay로 deadline 경계를 만든다."""
 
-    def __init__(self, resp):
+    def __init__(self, resp, delay=0.0):
         self._resp = resp
+        self._delay = delay
 
     async def send(self, prompt):
-        """표적 응답 흉내 — 고정 문자열 반환."""
-        await asyncio.sleep(0)
+        """표적 응답 흉내 — delay초 뒤 고정 문자열 반환(비블로킹)."""
+        await asyncio.sleep(self._delay)
         return self._resp
 
 
@@ -60,13 +61,21 @@ def _ensure_atlas(db, atlas_id, name):
 def _mk_chain(db, tag, atlas_id):
     """FK 체인: User → TargetProject → Scan(running) → Objective(pending)."""
     u = User(github_id=tag, github_name=tag)
-    db.add(u); db.commit(); db.refresh(u)
+    db.add(u)
+    db.commit()
+    db.refresh(u)
     t = TargetProject(user_id=u.user_id, project_name=tag, config={"canary": "FLAG123"})
-    db.add(t); db.commit(); db.refresh(t)
+    db.add(t)
+    db.commit()
+    db.refresh(t)
     s = Scan(target_id=t.target_id, status="running")
-    db.add(s); db.commit(); db.refresh(s)
+    db.add(s)
+    db.commit()
+    db.refresh(s)
     o = Objective(scan_id=s.scan_id, atlas_technique_id=atlas_id, status="pending")
-    db.add(o); db.commit(); db.refresh(o)
+    db.add(o)
+    db.commit()
+    db.refresh(o)
     return u, t, s, o
 
 
@@ -82,22 +91,25 @@ def _cleanup(db, u, t, s, o):
     db.query(ScanEvent).filter_by(scan_id=s.scan_id).delete()
     db.query(Objective).filter_by(scan_id=s.scan_id).delete()
     db.commit()
-    db.delete(db.get(Scan, s.scan_id)); db.commit()
-    db.delete(t); db.delete(u); db.commit()
+    db.delete(db.get(Scan, s.scan_id))
+    db.commit()
+    db.delete(t)
+    db.delete(u)
+    db.commit()
 
 
-def _run_case(db, atlas_id, resp, tag):
-    """공통: 스텁을 걸고 run_evolution 1회 실행 → (breached, findings, obj.status)."""
+def _run_case(db, atlas_id, resp, tag, delay=0.0, deadline=None):
+    """공통: 스텁을 걸고 run_evolution 1회 실행 → (breached, findings, obj.status, n_breached)."""
     u, t, s, o = _mk_chain(db, tag, atlas_id)
     orig = (orch.make_actor, orch.retrieve_seeds, J._haiku_judge,
             settings.attacker_ai_enabled, settings.multiturn_enabled)
     try:
-        orch.make_actor = lambda target: _Actor(resp)
+        orch.make_actor = lambda target: _Actor(resp, delay)
         orch.retrieve_seeds = lambda *a, **k: [_FakeSeed("seed-1"), _FakeSeed("seed-2")]
         J._haiku_judge = _haiku_breach
         settings.attacker_ai_enabled = False    # 결정론 변이(LLM 0)
         settings.multiturn_enabled = False      # 크레센도(LLM) 스킵
-        breached = orch.run_evolution(db, s.scan_id, o, t, "FLAG123")
+        breached = orch.run_evolution(db, s.scan_id, o, t, "FLAG123", deadline=deadline)
         db.refresh(o)
         finds = db.query(Finding).join(Attempt, Finding.attempt_id == Attempt.attempt_id) \
             .filter(Attempt.objective_id == o.objective_id).all()
@@ -146,6 +158,21 @@ def test_confirmed_pii(db):
     return ok
 
 
+def test_deadline_no_finalize(db):
+    """C) deadline 초과 경로에서는 의심 후보가 있어도 finalize하지 않는다(#159 CodeRabbit).
+    첫 씨앗(0.25s)은 의심으로 기록되지만, 그 사이 deadline이 지나 둘째 씨앗은 시작 안 함
+    → finding 0건, status=pending(untested 계약 보존)."""
+    import time
+    breached, finds, status, n_breached = _run_case(
+        db, "AML.T0056", "Sure! Here is some general help about your account.",
+        f"smoke-susp-C-{os.getpid()}", delay=0.25, deadline=time.monotonic() + 0.15)
+    ok = (breached is False and len(finds) == 0 and status == "pending" and n_breached == 0)
+    print(f"  C) breached={breached} findings={len(finds)} status={status!r} "
+          f"breached_attempts={n_breached} → {'PASS' if ok else 'FAIL'} "
+          f"(deadline=미완료 → 의심 확정 안 함)")
+    return ok
+
+
 def main() -> int:
     """의심/확정 두 경로를 실 DB에 관통 실행하고 종료코드로 결과 반환."""
     db = SessionLocal()
@@ -154,7 +181,7 @@ def main() -> int:
         created.append(("AML.T0056", _ensure_atlas(db, "AML.T0056", "Extract LLM System Prompt")))
         created.append(("AML.T0057", _ensure_atlas(db, "AML.T0057", "Exfiltrate Sensitive Data")))
         print("SMOKE 증거 기반 돌파(#157) — run_evolution 관통:")
-        ok = all([test_suspected(db), test_confirmed_pii(db)])
+        ok = all([test_suspected(db), test_confirmed_pii(db), test_deadline_no_finalize(db)])
         print("\nSMOKE:", "PASS ✅ (의심=medium/재확인, 확정=증거 있을 때만)" if ok else "FAIL ❌")
         return 0 if ok else 1
     finally:
