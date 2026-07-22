@@ -163,6 +163,7 @@ def _findings_core(db: Session, scan_id: int) -> list:
             "objective_id": obj.objective_id if obj else None,   # 프론트 계약
             "title": f"{tech_label} 침투 · {f.severity}",         # 프론트 계약(기법+심각도 파생)
             "severity": f.severity,
+            "confidence": f.confidence or "confirmed",           # confirmed | suspected(재확인 필요) — #157
             "atlas_technique_id": obj.atlas_technique_id if obj else None,
             "technique_name": tech.name if tech else None,
             "attempt_id": f.attempt_id,

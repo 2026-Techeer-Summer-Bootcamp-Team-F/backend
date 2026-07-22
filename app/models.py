@@ -98,6 +98,8 @@ class Finding(Base):
     findings_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     attempt_id: Mapped[int] = mapped_column(ForeignKey("attempts.attempt_id"), index=True)
     severity: Mapped[str] = mapped_column(String, default="")       # low/medium/high/critical
+    # 확신도(#157): confirmed=결정론적 증거(카나리·시스템프롬프트·PII) / suspected=증거 없는 AI 판정(재확인 필요)
+    confidence: Mapped[str] = mapped_column(String, default="confirmed")
     evidence: Mapped[str] = mapped_column(Text, default="")         # 카나리 매치·응답 스니펫
     mitigation: Mapped[str] = mapped_column(Text, default="")       # 시점 스냅샷
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
