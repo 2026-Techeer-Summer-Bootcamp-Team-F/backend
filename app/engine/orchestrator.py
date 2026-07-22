@@ -196,8 +196,8 @@ def run_evolution(db, scan_id: int, objective, target, canary,
     for seed_text in seed_texts:
         # 우아한 마감(#139): 새 공격 시작 전 경과시간 검사. 초과면 새 씨앗을 발사하지 않고
         # 반환(진행 중 공격 없음 — 이 지점이 발사 직전이므로). status 미변경 → untested.
+        # deadline 경로는 objective '미완료'라 _finalize()로 의심 확정을 하지 않는다(pending→untested 계약 보존, #157).
         if deadline is not None and time.monotonic() >= deadline:
-            _finalize()
             return False
         _publish_started(seed_text, 0, None)      # 발사 직전 = 채팅 공격 말풍선(#102)
         resp = _fire(actor, seed_text)
@@ -249,8 +249,7 @@ def run_evolution(db, scan_id: int, objective, target, canary,
         # 우아한 마감(#139): 세대(=공격 1건) 시작 전 검사. 초과면 새 세대를 열지 않고 반환
         # (직전 세대까지 결과는 이미 저장됨). status 미변경 → 부분(untested) 집계.
         if deadline is not None and time.monotonic() >= deadline:
-            _finalize()
-            return False
+            return False           # deadline=미완료 → 의심 확정 안 함(pending→untested 계약, #157)
         publish(scan_id, "progress", {
             "phase": "evolve", "generation": gen, "best_score": round(best, 3),
             "population": len(population)}, db=db, objective_id=objective.objective_id)
