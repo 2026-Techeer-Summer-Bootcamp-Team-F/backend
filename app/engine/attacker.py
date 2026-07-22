@@ -119,8 +119,15 @@ def _haiku_next_attack(atlas_id, atlas_name, profile, history, seeds):
             for i, h in enumerate(hist)
         ) or "(아직 시도 없음 — 사다리 첫 기법부터 시작)"
 
-        seed_texts = [(getattr(s, "prompt_text", "") or "")[:300] for s in (seeds or [])[:3]]
-        seeds_text = "\n".join(f"- {s}" for s in seed_texts if s) or "(없음)"
+        # 씨앗 원문을 넉넉히 싣는다(800자): 새 지시가 '씨앗 구조·강도 보존'이라 300자로 자르면
+        # 긴 공격이 잘려 약화된다(#158 CodeRabbit). 상위 3개만 실어 토큰은 묶는다.
+        seed_texts = [(getattr(s, "prompt_text", "") or "")[:800] for s in (seeds or [])[:3]]
+        seed_texts = [s for s in seed_texts if s]
+        # 씨앗이 하나도 없으면 '검증 공격에서 시작' 지시를 지킬 수 없다 → None 반환해 호출측이
+        # 결정론적 변이(mutate)로 폴백하게 한다(#158 CodeRabbit: 빈 씨앗 시 AI 창작 방지).
+        if not seed_texts:
+            return None
+        seeds_text = "\n".join(f"- {s}" for s in seed_texts)
 
         user = (
             f"ATTACK OBJECTIVE: {atlas_name} ({atlas_id})\n\n"
