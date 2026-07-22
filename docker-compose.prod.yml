@@ -37,7 +37,7 @@ services:
     depends_on:
       rabbitmq: {condition: service_healthy}
       redis: {condition: service_started}
-    command: ["celery","-A","app.celery_app","worker","--loglevel=info","--concurrency=1"]
+    command: ["celery","-A","app.celery_app","worker","--loglevel=info","--concurrency=2"]
     restart: unless-stopped
   caddy:
     image: caddy:2-alpine
