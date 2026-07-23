@@ -76,18 +76,30 @@ def _strip_markdown(text: str) -> str:
     return text.strip()
 
 
-def _format_files(files: dict[str, str], max_chars: int = 12000) -> str:
+def _format_files(files: dict[str, str], max_chars: int = 40000) -> str:
+    """소스를 'filename > line: code' 형식으로 직렬화(예산 max_chars).
+
+    단일 파일이 예산을 넘어도 통째로 버리지 않고 줄 단위로 잘라서 포함한다.
+    (버그: 예전엔 파일 하나가 상한보다 크면 break로 전부 스킵 → LLM에 소스 0자
+     전달 → findings=0 → code_locations가 빈 채로 남음. 표적 app.py가 12k자를
+     넘긴 순간부터 재현. 취약 라인은 파일 앞부분에 몰려 있으므로 줄단위 절단으로 보존.)
+    """
     parts = []
     total = 0
     for path, src in files.items():
         if not any(path.endswith(ext) for ext in _CODE_EXTS):
             continue
-        lines = src.splitlines()
-        block = "\n".join(f"{path} > {i+1}: {line}" for i, line in enumerate(lines))
-        if total + len(block) > max_chars:
+        if total >= max_chars:
             break
-        parts.append(block)
-        total += len(block)
+        block_lines = []
+        for i, line in enumerate(src.splitlines()):
+            row = f"{path} > {i+1}: {line}"
+            if total + len(row) + 1 > max_chars:
+                break
+            block_lines.append(row)
+            total += len(row) + 1
+        if block_lines:
+            parts.append("\n".join(block_lines))
     return "\n\n".join(parts)
 
 
