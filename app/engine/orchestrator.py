@@ -18,7 +18,7 @@ from ..config import settings
 from ..mitigations import get_mitigation
 from ..models import AtlasTechnique, Attempt, Finding
 from .actor import make_actor
-from .attacker import next_attack, next_turn
+from .attacker import ensure_shaped, next_attack, next_turn
 from .crescendo import run_crescendo
 from .judge import judge
 from .mutators import mutate, pick_op
@@ -277,6 +277,7 @@ def run_evolution(db, scan_id: int, objective, target, canary,
         else:
             op = pick_op()
             child, improvement = mutate(parent.prompt, op, [n.prompt for n in population])
+            child = ensure_shaped(atlas_id, child)   # 비-AI 경로도 간접/툴 형태 보장(CodeRabbit)
         _publish_started(child, gen, op, improvement)      # 발사 직전 = 채팅 공격 말풍선(#102)
         resp = _fire(actor, child)
         v = judge(resp, canary, system_prompt=profile["system_prompt"], objective=atlas_name, atlas_id=atlas_id)
