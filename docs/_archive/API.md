@@ -1,6 +1,6 @@
 # AI 레드팀 도구 — API 명세서
 
-> ## ⚠️ 이 문서는 **옛 버전** 입니다 — 최신은 [API-명세.md](./API-명세.md)
+> ## ⚠️ 이 문서는 **옛 버전** 입니다 — 최신은 [API-명세.md](../API-명세.md)
 > ERD 최종본 반영으로 아래가 바뀜(이 문서 대신 최신본 참고):
 > - `targets` → **`projects`**(엔드포인트) / 필드 `name`→`project_name`
 > - **`/targets/{id}/verify` 삭제** (소유확인 컬럼 삭제 — GitHub 로그인으로 갈음)
@@ -245,4 +245,4 @@ ATLAS 기법 마스터(정적 매핑 테이블).
 
 ---
 
-> 관련: [ARCHITECTURE.md](./ARCHITECTURE.md) · [ERD.md](./ERD.md) · `../app/backend/app/routers/`
+> 관련: [ARCHITECTURE.md](../ARCHITECTURE.md) · [ERD.md](./ERD.md) · `../../app/backend/app/routers/`

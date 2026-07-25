@@ -434,4 +434,4 @@ ATLAS 기법 마스터(atlas_techniques). 히트맵 라벨·기법 카드.
 
 ---
 
-> 관련: [ERD-완전정리.md](./ERD-완전정리.md) · [DESIGN-REF.md](./DESIGN-REF.md) · [ARCHITECTURE.md](./ARCHITECTURE.md) · (구) [API.md](./API.md)
+> 관련: [ERD-완전정리.md](./ERD-완전정리.md) · [DESIGN-REF.md](./DESIGN-REF.md) · [ARCHITECTURE.md](./ARCHITECTURE.md) · (구) [API.md](./_archive/API.md)
