@@ -261,4 +261,4 @@ MITRE ATLAS 공격 기법 **표준 사전**(12개, 고정). 다른 테이블이 
 
 ---
 
-> 관련: [ERD.md](./ERD.md)(정확 스키마) · [ARCHITECTURE.md](../ARCHITECTURE.md) · [API.md](./API.md) · `../app/backend/app/models.py`
+> 관련: [ERD.md](./ERD.md)(정확 스키마) · [ARCHITECTURE.md](../ARCHITECTURE.md) · [API.md](./API.md) · `../../app/backend/app/models.py`

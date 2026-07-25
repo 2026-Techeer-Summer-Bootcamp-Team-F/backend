@@ -333,4 +333,4 @@ FROM objectives WHERE scan_id = :sid GROUP BY atlas_technique_id;
 
 ---
 
-> 관련: [ARCHITECTURE.md](../ARCHITECTURE.md) · [API.md](./API.md) · [schema.sql](../schema.sql) · [erd.dbml](../erd.dbml) · `../app/backend/app/models.py`
+> 관련: [ARCHITECTURE.md](../ARCHITECTURE.md) · [API.md](./API.md) · [schema.sql](../schema.sql) · [erd.dbml](../erd.dbml) · `../../app/backend/app/models.py`

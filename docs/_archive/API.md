@@ -245,4 +245,4 @@ ATLAS 기법 마스터(정적 매핑 테이블).
 
 ---
 
-> 관련: [ARCHITECTURE.md](../ARCHITECTURE.md) · [ERD.md](./ERD.md) · `../app/backend/app/routers/`
+> 관련: [ARCHITECTURE.md](../ARCHITECTURE.md) · [ERD.md](./ERD.md) · `../../app/backend/app/routers/`
