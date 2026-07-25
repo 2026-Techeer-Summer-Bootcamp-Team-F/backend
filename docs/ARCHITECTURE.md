@@ -429,8 +429,8 @@ class HttpActorWithRetry:
 ai-redteam/
 ├── docs/
 │   ├── ARCHITECTURE.md              ← 이 파일
-│   ├── ERD.md                       (진화: 테이블 정의, PK/FK)
-│   ├── API.md                       (진화: 엔드포인트 스펙)
+│   ├── ERD-완전정리.md              (테이블·컬럼 정의, PK/FK — 최종본)
+│   ├── API-명세.md                  (엔드포인트 스펙 — 최종본)
 │   └── DEPLOYMENT.md                (진화: 배포 가이드)
 │
 ├── app/
@@ -546,7 +546,7 @@ ai-redteam/
 ├── nginx.conf                        (리버스 프록시 설정)
 ├── 기획.md                            (현행 기획서)
 ├── 아키텍처-기술스택.md               (기술 근거)
-├── 오픈소스-분석.md                   (OSS 차용 설계)
+├── 오픈소스-분석.md                   (OSS 설계 레퍼런스)
 └── README.md                         (프로젝트 소개)
 ```
 
@@ -720,9 +720,9 @@ useEffect(() => {
 |---|---|---|
 | **기획서** | `../기획.md` | 현행 기획(파이프라인·상세설계) |
 | **기술스택 근거** | `../아키텍처-기술스택.md` | 각 컴포넌트 선택 근거 |
-| **OSS 차용 설계** | `../오픈소스-분석.md` | 진화 엔진 구현 기초(GPTFuzzer/AutoDAN) |
-| **ERD** | `./ERD.md` | 테이블 스키마 (진화: 작성예정) |
-| **API 명세** | `./API.md` | FastAPI 엔드포인트 (진화: 작성예정) |
+| **OSS 설계 레퍼런스** | `../오픈소스-분석.md` | 진화 엔진 구현 기초(GPTFuzzer/AutoDAN) |
+| **ERD** | `./ERD-완전정리.md` | 테이블 스키마 최종본 (10개 테이블) |
+| **API 명세** | `./API-명세.md` | FastAPI 엔드포인트 최종본 |
 | **배포 가이드** | `./DEPLOYMENT.md` | Docker/K8s/EC2 배포 (진화: 작성예정) |
 
 ---

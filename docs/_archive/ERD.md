@@ -1,6 +1,6 @@
 # AI 레드팀 도구 — ERD (데이터 모델 확정) · 11개 테이블
 
-> ## ⚠️ 이 문서는 **옛 버전(초안)** 입니다 — 최신 정합본은 [ERD-완전정리.md](./ERD-완전정리.md)
+> ## ⚠️ 이 문서는 **옛 버전(초안)** 입니다 — 최신 정합본은 [ERD-완전정리.md](../ERD-완전정리.md)
 > 팀이 ERD를 편집하면서 아래가 **바뀌었으니 이 문서 대신 최신본을 보세요**:
 > - `recon_profiles` 테이블 **삭제 → `target_projects`(옛 `targets`)에 통합** (테이블 11 → 10개)
 > - `ownership_verified`/`verify_method`/`verify_token` **컬럼 삭제** (GitHub 로그인으로 갈음)
@@ -323,8 +323,8 @@ FROM objectives WHERE scan_id = :sid GROUP BY atlas_technique_id;
 
 | 파일 | 도구 | 방법 |
 |---|---|---|
-| [`schema.sql`](./schema.sql) | **ERDCloud**(erdcloud.com), draw.io | `Import → SQL` 에 붙여넣기 → 11개 테이블+FK 관계+**한글 논리명** 자동 생성 |
-| [`erd.dbml`](./erd.dbml) | **dbdiagram.io** | New Diagram 에 전체 붙여넣기 → 즉시 자동 렌더링(한글 note 포함) |
+| [`schema.sql`](../schema.sql) | **ERDCloud**(erdcloud.com), draw.io | `Import → SQL` 에 붙여넣기 → 11개 테이블+FK 관계+**한글 논리명** 자동 생성 |
+| [`erd.dbml`](../erd.dbml) | **dbdiagram.io** | New Diagram 에 전체 붙여넣기 → 즉시 자동 렌더링(한글 note 포함) |
 
 > - 둘 다 `app/backend/app/models.py`에서 **자동 생성**(`gen_erd.py`) → DB 스키마와 100% 일치.
 > - `schema.sql` = **MySQL 방언 + 컬럼 COMMENT(한글명)** → ERDCloud가 `생성일시 | created_at | TIMESTAMP` 처럼 앞=한글/뒤=영어로 표시.
@@ -333,4 +333,4 @@ FROM objectives WHERE scan_id = :sid GROUP BY atlas_technique_id;
 
 ---
 
-> 관련: [ARCHITECTURE.md](./ARCHITECTURE.md) · [API.md](./API.md) · [schema.sql](./schema.sql) · [erd.dbml](./erd.dbml) · `../app/backend/app/models.py`
+> 관련: [ARCHITECTURE.md](../ARCHITECTURE.md) · [API.md](./API.md) · [schema.sql](../schema.sql) · [erd.dbml](../erd.dbml) · `../app/backend/app/models.py`

@@ -1,6 +1,6 @@
 # ERD 이해 가이드 (발표·팀 공유용)
 
-> ## ⚠️ 이 문서는 **초안** 입니다 — 최신 정합본은 [ERD-완전정리.md](./ERD-완전정리.md)
+> ## ⚠️ 이 문서는 **초안** 입니다 — 최신 정합본은 [ERD-완전정리.md](../ERD-완전정리.md)
 > 이 가이드는 11테이블 초안 기준이라 아래가 옛날임(최신본 참고):
 > - `recon_profiles` **삭제 → `target_projects`에 통합** (10테이블), `targets`→`target_projects`
 > - `ownership_verified`/`verify_*` **삭제**, `avatar_url` 삭제, `seed_case_id`→`attack_id`
@@ -261,4 +261,4 @@ MITRE ATLAS 공격 기법 **표준 사전**(12개, 고정). 다른 테이블이 
 
 ---
 
-> 관련: [ERD.md](./ERD.md)(정확 스키마) · [ARCHITECTURE.md](./ARCHITECTURE.md) · [API.md](./API.md) · `../app/backend/app/models.py`
+> 관련: [ERD.md](./ERD.md)(정확 스키마) · [ARCHITECTURE.md](../ARCHITECTURE.md) · [API.md](./API.md) · `../app/backend/app/models.py`

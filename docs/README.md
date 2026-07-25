@@ -7,7 +7,7 @@
 ## 1. 비전·기획 (무엇을·왜)
 1. [기획.md](기획.md) — **통합 기획서** (정의·차별점·파이프라인·상세설계·비용·우선순위). ⭐먼저 읽기.
 2. [아키텍처-기술스택.md](아키텍처-기술스택.md) — 확정 스택과 이유.
-3. [오픈소스-분석.md](오픈소스-분석.md) — 참조 OSS(promptfoo/PyRIT/garak/GPTFuzzer/AutoDAN) 차용 설계.
+3. [오픈소스-분석.md](오픈소스-분석.md) — 참조 OSS(promptfoo/PyRIT/garak/GPTFuzzer/AutoDAN) 설계 레퍼런스.
 4. [docs/진화엔진-정리.md](docs/진화엔진-정리.md) — 진화 엔진 출처·파이프라인·AI 사용 3자리·자기학습 코퍼스.
 5. [AI레드팀-PoC-발표.md](AI레드팀-PoC-발표.md) — 발표 자료.
 5-1. [poc/](poc/) — **PoC 코드·실데이터** (poc1 데이터적재·poc2 공격생성·poc3 파이프라인·static_scan AST). 실데이터: `jailbreak_prompts.csv`(1,405)·`ATLAS.yaml`·`l1b3rt4s/`. ⚠️백엔드 `corpus.py`가 이 CSV를 읽음(경로 의존).
@@ -28,7 +28,7 @@
 14. [트러블슈팅.md](트러블슈팅.md) — 문제→원인→해결 기록 (작업 끝날 때마다 갱신).
 
 ## 4. 옛 문서 (참고용, 지우지 않음)
-- deprecated(최신본으로 대체됨): [docs/ERD.md](docs/ERD.md) · [docs/ERD-가이드.md](docs/ERD-가이드.md) · [docs/API.md](docs/API.md)
+- deprecated(최신본으로 대체됨): [docs/ERD.md](_archive/ERD.md) · [docs/ERD-가이드.md](_archive/ERD-가이드.md) · [docs/API.md](_archive/API.md)
 - [_archive/](_archive/) — 초기 기획(PLANNING·기획서·AI레드팀-기획 + 옛 docs). 방향 참고용.
 
 ---
